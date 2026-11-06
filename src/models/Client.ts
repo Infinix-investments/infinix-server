@@ -5,7 +5,7 @@ export interface IClient extends Document {
   firstName: string;
   lastName: string;
   email: string;
-  phone: string;
+  phone?: string;
   password?: string;
   role: 'client' | 'admin';
   status: 'active' | 'prospect' | 'review_required' | 'archived';
@@ -14,6 +14,10 @@ export interface IClient extends Document {
   kycStatus: 'verified' | 'pending' | 'rejected';
   isPhoneVerified: boolean;
   phoneVerifiedAt?: Date;
+  isEmailVerified?: boolean;
+  emailVerifiedAt?: Date;
+  emailOtp?: string;
+  emailOtpExpires?: Date;
   assignedPlanId?: string | null;
   assignedPlanName?: string;
   assignedPlanAmount?: number;
@@ -40,7 +44,7 @@ const ClientSchema: Schema = new Schema(
     firstName: { type: String, required: true },
     lastName: { type: String, required: true },
     email: { type: String, required: true, unique: true, index: true, lowercase: true, trim: true },
-    phone: { type: String, required: true },
+    phone: { type: String, default: '' },
     password: { type: String, default: 'password123' },
     role: { type: String, enum: ['client', 'admin'], default: 'client' },
     status: {
@@ -65,6 +69,10 @@ const ClientSchema: Schema = new Schema(
     },
     isPhoneVerified: { type: Boolean, default: false },
     phoneVerifiedAt: { type: Date },
+    isEmailVerified: { type: Boolean, default: false },
+    emailVerifiedAt: { type: Date },
+    emailOtp: { type: String },
+    emailOtpExpires: { type: Date },
     assignedPlanId: { type: String, default: null },
     assignedPlanName: { type: String },
     assignedPlanAmount: { type: Number, default: 0 },
