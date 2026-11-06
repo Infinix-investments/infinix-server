@@ -46,7 +46,16 @@ async function main() {
       secret: JWT_SECRET,
     });
 
-    // 5. Health Check Endpoint
+    // 5. Health Check & Root Endpoints
+    server.get('/', async () => {
+      return {
+        status: 'ok',
+        service: 'INFINIX Institutional Wealth API Engine',
+        timestamp: new Date().toISOString(),
+        version: '1.0.0',
+      };
+    });
+
     server.get('/api/health', async () => {
       return {
         status: 'ok',
