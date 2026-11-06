@@ -14,6 +14,8 @@ export interface IClient extends Document {
   kycStatus: 'verified' | 'pending' | 'rejected';
   isPhoneVerified: boolean;
   phoneVerifiedAt?: Date;
+  phoneOtp?: string;
+  phoneOtpExpires?: Date;
   isEmailVerified?: boolean;
   emailVerifiedAt?: Date;
   emailOtp?: string;
@@ -69,6 +71,8 @@ const ClientSchema: Schema = new Schema(
     },
     isPhoneVerified: { type: Boolean, default: false },
     phoneVerifiedAt: { type: Date },
+    phoneOtp: { type: String },
+    phoneOtpExpires: { type: Date },
     isEmailVerified: { type: Boolean, default: false },
     emailVerifiedAt: { type: Date },
     emailOtp: { type: String },
