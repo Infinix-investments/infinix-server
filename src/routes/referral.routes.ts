@@ -72,8 +72,24 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
 
     const referralId = body.referralId || `ref-${Date.now().toString().slice(-4)}`;
     const capital = Number(body.capitalAmount) || 0;
-    const commissionPct = Number(body.commissionRatePct) || 2.0;
-    const monthlyCommission = Math.round(capital * (commissionPct / 100));
+    const level = Number(body.level) || 1;
+    
+    // Level specific commission percentage of ROI:
+    // Level 1: 10%, Level 2: 5%, Level 3: 3%, Level 4: 2%, Level 5: 1%
+    const levelPercentages: Record<number, number> = {
+      1: 10.0,
+      2: 5.0,
+      3: 3.0,
+      4: 2.0,
+      5: 1.0,
+    };
+    const commissionPct = Number(body.commissionRatePct) || levelPercentages[level] || 10.0;
+    
+    // Referred person's monthly ROI (15% on 14-Month Accelerator plan)
+    const monthlyRoi = Math.round(capital * 0.15);
+    
+    // Level profit = level specific percentage of ROI of their investment
+    const monthlyCommission = Math.round(monthlyRoi * (commissionPct / 100));
 
     const referral = await Referral.create({
       referralId,

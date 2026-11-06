@@ -365,35 +365,57 @@ export const SEED_REFERRALS = [
 export const SEED_REFERRAL_TIERS = [
   {
     level: 1,
-    name: 'Direct Wealth Partner',
-    commissionPct: 2.0,
+    name: 'Level 1: Direct Wealth Partner',
+    commissionPct: 10.0, // 10% of referred person's ROI
     minTeamAum: 0,
-    minDirectReferrals: 1,
-    description: 'Earn a direct 2.0% monthly bonus on all capital invested by investors you personally introduce.',
+    minDirectReferrals: 2, // Unlocks after 2 successful referrals who start a plan
+    description: 'Earn 10% of the monthly ROI earned by your 2 direct referrals who start an active plan.',
     totalMembersCount: 24,
     totalVolumeGenerated: 45000000,
     status: 'active' as const,
   },
   {
     level: 2,
-    name: 'Senior Wealth Syndicator',
-    commissionPct: 1.0,
-    minTeamAum: 5000000,
-    minDirectReferrals: 3,
-    description: 'Unlock secondary tier rewards with an ongoing 1.0% monthly override on tier-2 syndicate volume.',
-    totalMembersCount: 8,
-    totalVolumeGenerated: 120000000,
+    name: 'Level 2: Senior Syndicator',
+    commissionPct: 5.0, // 5% of referred person's ROI
+    minTeamAum: 0,
+    minDirectReferrals: 4, // 2 more referrals (total 4)
+    description: 'Earn 5% of the monthly ROI earned by level-2 referrals in your syndicate.',
+    totalMembersCount: 12,
+    totalVolumeGenerated: 85000000,
     status: 'active' as const,
   },
   {
     level: 3,
-    name: 'Institutional Managing Partner',
-    commissionPct: 0.5,
-    minTeamAum: 20000000,
-    minDirectReferrals: 8,
-    description: 'Master institutional tier. Earn a 0.5% monthly pool override across your entire tertiary syndicate.',
-    totalMembersCount: 2,
-    totalVolumeGenerated: 350000000,
+    name: 'Level 3: Managing Partner',
+    commissionPct: 3.0, // 3% of referred person's ROI
+    minTeamAum: 0,
+    minDirectReferrals: 6, // 2 more referrals (total 6)
+    description: 'Earn 3% of the monthly ROI earned by level-3 referrals in your syndicate.',
+    totalMembersCount: 6,
+    totalVolumeGenerated: 160000000,
+    status: 'active' as const,
+  },
+  {
+    level: 4,
+    name: 'Level 4: Principal Partner',
+    commissionPct: 2.0, // 2% of referred person's ROI
+    minTeamAum: 0,
+    minDirectReferrals: 8, // 2 more referrals (total 8)
+    description: 'Earn 2% of the monthly ROI earned by level-4 referrals in your syndicate.',
+    totalMembersCount: 3,
+    totalVolumeGenerated: 280000000,
+    status: 'active' as const,
+  },
+  {
+    level: 5,
+    name: 'Level 5: Institutional Director',
+    commissionPct: 1.0, // 1% of referred person's ROI
+    minTeamAum: 0,
+    minDirectReferrals: 10, // 2 more referrals (total 10)
+    description: 'Earn 1% of the monthly ROI earned by level-5 referrals in your entire syndicate.',
+    totalMembersCount: 1,
+    totalVolumeGenerated: 500000000,
     status: 'active' as const,
   },
 ];
