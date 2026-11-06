@@ -135,11 +135,33 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     });
   });
 
-  // POST /api/auth/register (ONLY mail & password required, OTP sent to mail!)
+  // POST /api/auth/register (First name, Last name, Email, Password -> Passcode sent to email)
   fastify.post('/register', async (request, reply) => {
-    const { email, password, fullName, firstName, lastName, referralCode } = request.body as any;
+    const { email, password, firstName, lastName, fullName, referralCode } = request.body as any;
     const cleanEmail = (email || '').trim().toLowerCase();
     const cleanPassword = (password || '').trim();
+    let cleanFirstName = (firstName || '').trim();
+    let cleanLastName = (lastName || '').trim();
+
+    if (!cleanFirstName && fullName) {
+      const parts = fullName.trim().split(' ');
+      cleanFirstName = parts[0] || '';
+      cleanLastName = parts.slice(1).join(' ') || '';
+    }
+
+    if (!cleanFirstName) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please enter your first name.',
+      });
+    }
+
+    if (!cleanLastName) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please enter your last name.',
+      });
+    }
 
     if (!cleanEmail || !cleanEmail.includes('@')) {
       return reply.status(400).send({
@@ -157,42 +179,68 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
 
     const existing = await Client.findOne({ email: cleanEmail });
     if (existing) {
-      return reply.status(400).send({
-        success: false,
-        error: 'An account with this email address already exists. Please sign in.',
+      // If already verified, require signing in
+      if (existing.isPhoneVerified) {
+        return reply.status(400).send({
+          success: false,
+          error: 'An account with this email address already exists. Please sign in with your email and password.',
+        });
+      }
+
+      // If pending verification, update info and send fresh passcode
+      existing.firstName = cleanFirstName;
+      existing.lastName = cleanLastName;
+      existing.password = cleanPassword;
+      const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+      existing.emailOtp = generatedOtp;
+      existing.emailOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
+      await existing.save();
+
+      await sendOtpEmail(cleanEmail, generatedOtp, cleanFirstName);
+
+      const token = fastify.jwt.sign({
+        id: existing.clientId,
+        email: existing.email,
+        role: existing.role,
+      });
+
+      return reply.status(200).send({
+        success: true,
+        message: `A 6-digit verification passcode has been dispatched to ${cleanEmail}.`,
+        token,
+        demoOtp: generatedOtp,
+        user: {
+          id: existing.clientId,
+          clientId: existing.clientId,
+          username: existing.email.split('@')[0],
+          email: existing.email,
+          phone: existing.phone,
+          role: existing.role,
+          displayName: `${existing.firstName} ${existing.lastName}`,
+          isPhoneVerified: false,
+          kycStatus: existing.kycStatus,
+          assignedPlanId: null,
+          referralCode: existing.referralCode,
+        },
       });
     }
 
-    // Derive name from input or email prefix
-    let fName = firstName;
-    let lName = lastName;
-    if (!fName && fullName) {
-      const parts = fullName.trim().split(' ');
-      fName = parts[0];
-      lName = parts.slice(1).join(' ') || 'Investor';
-    } else if (!fName) {
-      const emailPrefix = cleanEmail.split('@')[0];
-      const capitalized = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
-      fName = capitalized;
-      lName = 'Investor';
-    }
-
     const newClientId = `c-${Date.now().toString().slice(-4)}`;
-    const myReferralCode = `INF-${fName.toUpperCase()}${newClientId.slice(-3)}`;
+    const myReferralCode = `INF-${cleanFirstName.toUpperCase()}${newClientId.slice(-3)}`;
 
-    // Generate 6-digit OTP
+    // Generate 6-digit passcode
     const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
 
     const newClient = await Client.create({
       clientId: newClientId,
-      firstName: fName,
-      lastName: lName || 'Investor',
+      firstName: cleanFirstName,
+      lastName: cleanLastName,
       email: cleanEmail,
-      phone: '', // Phone is NOT requested at registration
+      phone: '', // No phone needed at registration
       password: cleanPassword,
       role: 'client',
-      status: 'active',
+      status: 'pending',
       tier: 'standard',
       riskTolerance: 'moderate',
       kycStatus: 'pending',
@@ -210,16 +258,16 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       joinedDate: new Date().toISOString().split('T')[0],
     });
 
-    // Send OTP to user's email
-    await sendOtpEmail(cleanEmail, generatedOtp, fName);
+    // Send 6-digit passcode to user's email
+    await sendOtpEmail(cleanEmail, generatedOtp, cleanFirstName);
 
     await AuditLog.create({
       auditId: `audit-${Date.now()}`,
       timestamp: new Date().toISOString(),
       adminName: 'Registration Service',
-      action: 'Investor Registered',
+      action: 'Investor Registration Initiated',
       category: 'client_verification',
-      details: `New investor account created: ${newClient.firstName} ${newClient.lastName} (${cleanEmail}). OTP dispatched to email.`,
+      details: `New investor registered: ${newClient.firstName} ${newClient.lastName} (${cleanEmail}). Passcode dispatched to email.`,
     });
 
     const token = fastify.jwt.sign({
@@ -230,9 +278,9 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
 
     return reply.status(201).send({
       success: true,
-      message: `Registration successful! A 6-digit OTP has been sent to ${cleanEmail}.`,
+      message: `Registration initiated! A 6-digit passcode has been sent to ${cleanEmail}.`,
       token,
-      demoOtp: generatedOtp, // Included for dev testing
+      demoOtp: generatedOtp,
       user: {
         id: newClient.clientId,
         clientId: newClient.clientId,
@@ -298,9 +346,10 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    // Mark as verified
+    // Mark as verified & active
     user.isPhoneVerified = true;
     user.isEmailVerified = true;
+    user.status = 'active';
     user.emailVerifiedAt = new Date();
     user.phoneVerifiedAt = new Date();
     user.emailOtp = undefined;
@@ -311,15 +360,37 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       auditId: `audit-${Date.now()}`,
       timestamp: new Date().toISOString(),
       adminName: 'Verification Engine',
-      action: 'OTP Verified',
+      action: 'Account Created & Passcode Verified',
       category: 'client_verification',
-      details: `OTP verified for ${user.firstName} ${user.lastName} (${user.email}). Account fully unlocked.`,
+      details: `Passcode verified for ${user.firstName} ${user.lastName} (${user.email}). Account officially created & fully unlocked.`,
+    });
+
+    const token = fastify.jwt.sign({
+      id: user.clientId,
+      email: user.email,
+      role: user.role,
     });
 
     return reply.send({
       success: true,
-      message: 'Email & identity successfully verified! Welcome to INFINIX Private Wealth.',
+      message: 'Email & passcode successfully verified! Welcome to INFINIX Private Wealth.',
+      token,
       isPhoneVerified: true,
+      user: {
+        id: user.clientId,
+        clientId: user.clientId,
+        username: user.email.split('@')[0],
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        displayName: `${user.firstName} ${user.lastName}`,
+        isPhoneVerified: true,
+        kycStatus: user.kycStatus,
+        assignedPlanId: user.assignedPlanId || null,
+        assignedPlanName: user.assignedPlanName,
+        assignedPlanAmount: user.assignedPlanAmount,
+        referralCode: user.referralCode,
+      },
     });
   });
 

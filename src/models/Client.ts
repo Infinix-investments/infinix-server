@@ -8,7 +8,7 @@ export interface IClient extends Document {
   phone?: string;
   password?: string;
   role: 'client' | 'admin';
-  status: 'active' | 'prospect' | 'review_required' | 'archived';
+  status: 'active' | 'prospect' | 'review_required' | 'archived' | 'pending';
   tier: 'standard' | 'premium' | 'high_net_worth' | 'ultra_hnw';
   riskTolerance: 'conservative' | 'moderately_conservative' | 'moderate' | 'growth' | 'aggressive';
   kycStatus: 'verified' | 'pending' | 'rejected';
@@ -49,7 +49,7 @@ const ClientSchema: Schema = new Schema(
     role: { type: String, enum: ['client', 'admin'], default: 'client' },
     status: {
       type: String,
-      enum: ['active', 'prospect', 'review_required', 'archived'],
+      enum: ['active', 'prospect', 'review_required', 'archived', 'pending'],
       default: 'active',
     },
     tier: {
