@@ -19,11 +19,12 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    // Standard Database Lookup
+    // Standard Database Lookup (Robust case-insensitive match for email & clientId)
+    const safeRegex = new RegExp(`^${loginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
     const user = await Client.findOne({
       $or: [
-        { email: loginId },
-        { clientId: loginId },
+        { email: safeRegex },
+        { clientId: safeRegex },
         { phone: loginId.replace(/[\s+-]/g, '') },
       ],
     });
@@ -145,10 +146,12 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     // Salt and hash password with bcrypt
     const hashedPassword = await bcrypt.hash(cleanPassword, 10);
 
-    const existing = await Client.findOne({ email: cleanEmail });
+    const existing = await Client.findOne({
+      email: new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    });
     if (existing) {
-      // If already verified, require signing in
-      if (existing.isPhoneVerified) {
+      // If already verified or active, require signing in
+      if (existing.isPhoneVerified || existing.isEmailVerified || existing.status === 'active') {
         return reply.status(400).send({
           success: false,
           error: 'An account with this email address already exists. Please sign in with your email and password.',
