@@ -1,19 +1,67 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { Referral } from '../models/Referral.js';
 import { ReferralTier } from '../models/ReferralTier.js';
+import { Client } from '../models/Client.js';
 import { AuditLog } from '../models/AuditLog.js';
 
 export async function referralRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   // GET /api/referrals
   fastify.get('/', async (request, reply) => {
     const { referrerId, referrerCode, level, status } = request.query as any;
+
+    let targetCode = referrerCode;
+    if (!targetCode && referrerId) {
+      const refClient = await Client.findOne({ clientId: referrerId });
+      if (refClient) {
+        targetCode = refClient.referralCode;
+      }
+    }
+
     const query: any = {};
-    if (referrerId) query.referrerId = referrerId;
-    if (referrerCode) query.referrerCode = referrerCode;
+    if (referrerId && targetCode) {
+      query.$or = [{ referrerId }, { referrerCode: targetCode }];
+    } else if (referrerId) {
+      query.referrerId = referrerId;
+    } else if (targetCode) {
+      query.referrerCode = targetCode;
+    }
     if (level) query.level = Number(level);
     if (status) query.status = status;
 
     const referrals = await Referral.find(query).sort({ createdAt: -1 });
+
+    // Also include any clients who registered with referredByCode matching targetCode
+    if (targetCode) {
+      const registeredReferees = await Client.find({ referredByCode: targetCode });
+      for (const rc of registeredReferees) {
+        const alreadyExists = referrals.some(
+          (r) => r.refereeId === rc.clientId || r.refereeEmail.toLowerCase() === rc.email.toLowerCase()
+        );
+        if (!alreadyExists) {
+          const cap = rc.assignedPlanAmount || 0;
+          const monthlyRoi = Math.round(cap * 0.15);
+          const comm = Math.round(monthlyRoi * 0.10);
+          referrals.push({
+            referralId: `ref-${rc.clientId}`,
+            referrerId: referrerId || '',
+            referrerName: 'Wealth Partner',
+            referrerCode: targetCode,
+            refereeId: rc.clientId,
+            refereeName: `${rc.firstName} ${rc.lastName}`,
+            refereeEmail: rc.email,
+            refereePhone: rc.phone || '',
+            level: 1,
+            planName: rc.assignedPlanName || '14-Month Wealth Accelerator',
+            capitalAmount: cap,
+            commissionRatePct: 10.0,
+            monthlyCommissionAmount: comm,
+            totalEarnedAmount: comm,
+            status: rc.assignedPlanStatus === 'active' ? 'active' : 'pending',
+            dateJoined: rc.joinedDate,
+          } as any);
+        }
+      }
+    }
 
     return reply.send({
       success: true,

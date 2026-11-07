@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { Client } from '../models/Client.js';
+import { Referral } from '../models/Referral.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { sendOtpEmail } from '../services/email.service.js';
 
@@ -162,7 +163,27 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     }
 
     const newClientId = `c-${Date.now().toString().slice(-4)}`;
-    const myReferralCode = `INF-${cleanFirstName.toUpperCase()}${newClientId.slice(-3)}`;
+
+    // Generate guaranteed unique referral code for every user
+    const namePrefix = cleanFirstName.replace(/[^A-Za-z]/g, '').toUpperCase() || 'USER';
+    let myReferralCode = '';
+    let isUnique = false;
+    let attempts = 0;
+    while (!isUnique && attempts < 10) {
+      attempts++;
+      const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+      const candidate = `INF-${namePrefix}${randomSuffix}`;
+      const exists = await Client.findOne({ referralCode: candidate });
+      if (!exists) {
+        myReferralCode = candidate;
+        isUnique = true;
+      }
+    }
+    if (!myReferralCode) {
+      myReferralCode = `INF-${namePrefix}${Date.now().toString().slice(-4)}`;
+    }
+
+    const cleanReferredBy = (referralCode || '').trim().toUpperCase();
 
     // Generate 6-digit passcode
     const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -190,9 +211,43 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       currentMonthWithdrawn: false,
       totalAum: 0,
       referralCode: myReferralCode,
-      referredByCode: referralCode || undefined,
+      referredByCode: cleanReferredBy || undefined,
       joinedDate: new Date().toISOString().split('T')[0],
     });
+
+    // If registered via a referral code, link to referring client
+    if (cleanReferredBy) {
+      try {
+        const referrer = await Client.findOne({
+          $or: [
+            { referralCode: new RegExp(`^${cleanReferredBy}$`, 'i') },
+            { clientId: cleanReferredBy.toLowerCase() },
+          ],
+        });
+        if (referrer) {
+          await Referral.create({
+            referralId: `ref-${Date.now().toString().slice(-4)}`,
+            referrerId: referrer.clientId,
+            referrerName: `${referrer.firstName} ${referrer.lastName}`,
+            referrerCode: referrer.referralCode || cleanReferredBy,
+            refereeId: newClient.clientId,
+            refereeName: `${newClient.firstName} ${newClient.lastName}`,
+            refereeEmail: newClient.email,
+            refereePhone: newClient.phone || '',
+            level: 1,
+            planName: '14-Month Wealth Accelerator',
+            capitalAmount: 0,
+            commissionRatePct: 10.0,
+            monthlyCommissionAmount: 0,
+            totalEarnedAmount: 0,
+            status: 'active',
+            dateJoined: newClient.joinedDate,
+          });
+        }
+      } catch (err) {
+        // Silently continue if referral creation fails
+      }
+    }
 
     // Send 6-digit passcode to user's email
     await sendOtpEmail(cleanEmail, generatedOtp, cleanFirstName);
