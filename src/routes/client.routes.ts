@@ -179,36 +179,37 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     return reply.send({ success: true, data: client });
   });
 
-  // POST /api/clients/:id/assign-plan
+  // POST /api/clients/:id/assign-plan (Payment verified & plan started by Admin)
   fastify.post('/:id/assign-plan', async (request, reply) => {
     const { id } = request.params as any;
-    const { planId, capitalAmount, adminName } = request.body as any;
+    const { planId, capitalAmount, startDate, paymentReference, adminName } = request.body as any;
 
     const client = await Client.findOne({ clientId: id });
     if (!client) {
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
 
-    const plan = await Plan.findOne({ planId }) || await Plan.findOne({ isDefault: true });
-    const planName = plan ? plan.planName : '14-Month 15% Return Accelerator';
-    const amount = Number(capitalAmount) || 1000000;
+    const plan = (await Plan.findOne({ planId })) || (await Plan.findOne({ isDefault: true })) || (await Plan.findOne());
+    const planName = plan ? plan.planName : '14-Month 15% Return Accelerator (0.5% Daily)';
+    const amount = Number(capitalAmount) || 100000;
+    const activeStartDate = startDate || new Date().toISOString().split('T')[0];
 
     client.assignedPlanId = plan ? plan.planId : 'plan-14m-15pct';
     client.assignedPlanName = planName;
     client.assignedPlanAmount = amount;
-    client.assignedPlanStartDate = new Date().toISOString().split('T')[0];
+    client.assignedPlanStartDate = activeStartDate;
     client.assignedPlanStatus = 'active';
-    client.totalAum = (client.totalAum || 0) + amount;
+    client.totalAum = amount;
     client.kycStatus = 'verified';
     client.isPhoneVerified = true;
     await client.save();
 
-    // Create matching investment record
+    // Create or update matching investment record
     const investmentId = `inv-${Date.now().toString().slice(-4)}`;
     await Investment.create({
       investmentId,
       clientId: client.clientId,
-      symbol: 'INF-ACC-14M',
+      symbol: 'INF-14M',
       name: planName,
       assetClass: 'private_plan',
       shares: 1,
@@ -216,16 +217,16 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       currentValue: amount,
       currentPrice: amount,
       currency: 'INR',
-      investmentDate: new Date().toISOString().split('T')[0],
-      valuationDate: new Date().toISOString().split('T')[0],
+      investmentDate: activeStartDate,
+      valuationDate: activeStartDate,
       valuationType: 'manual',
-      notes: `Allocated by wealth administrator ${adminName || 'Admin'}. 15.0% monthly distribution.`,
+      notes: `Allocated by wealth administrator ${adminName || 'Admin'}. Payment verified${paymentReference ? ` (Ref: ${paymentReference})` : ''}. 0.5% daily (15% monthly) distribution.`,
       valuationHistory: [
         {
           id: `vh-${Date.now()}`,
-          date: new Date().toISOString().split('T')[0],
+          date: activeStartDate,
           value: amount,
-          notes: 'Initial contractual plan allocation',
+          notes: 'Initial contractual plan allocation following payment verification',
         },
       ],
     });
@@ -235,14 +236,14 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       auditId: `audit-${Date.now()}`,
       timestamp: new Date().toISOString(),
       adminName: adminName || 'Administrator',
-      action: 'Plan Allocation',
+      action: 'Plan Activated (Payment Verified)',
       category: 'plan_assignment',
-      details: `Allocated ${planName} (₹${amount.toLocaleString('en-IN')}) to ${client.firstName} ${client.lastName} (${client.clientId})`,
+      details: `Payment verified & activated ${planName} (₹${amount.toLocaleString('en-IN')}) for ${client.firstName} ${client.lastName} (${client.clientId}). Start Date: ${activeStartDate}. Ref: ${paymentReference || 'Bank Escrow Verified'}.`,
     });
 
     return reply.send({
       success: true,
-      message: `Plan successfully allocated to ${client.firstName} ${client.lastName}.`,
+      message: `Payment verified. "${planName}" successfully activated for ${client.firstName} ${client.lastName}.`,
       data: client,
     });
   });

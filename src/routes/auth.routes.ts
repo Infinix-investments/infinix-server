@@ -17,67 +17,6 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    // 1-Tap / Quick Demo login: user / user
-    if ((loginId === 'user' || loginId === 'user@infinix.com') && loginPass === 'user') {
-      const demoUser = await Client.findOne({ clientId: 'c-101' }) || await Client.findOne({ role: 'client' });
-      if (demoUser) {
-        const token = fastify.jwt.sign({
-          id: demoUser.clientId,
-          email: demoUser.email,
-          role: demoUser.role,
-        });
-
-        return reply.send({
-          success: true,
-          token,
-          user: {
-            id: demoUser.clientId,
-            clientId: demoUser.clientId,
-            username: demoUser.email.split('@')[0],
-            email: demoUser.email,
-            phone: demoUser.phone,
-            role: demoUser.role,
-            displayName: `${demoUser.firstName} ${demoUser.lastName}`,
-            isPhoneVerified: !!demoUser.isPhoneVerified,
-            kycStatus: demoUser.kycStatus,
-            assignedPlanId: demoUser.assignedPlanId || null,
-            assignedPlanName: demoUser.assignedPlanName,
-            assignedPlanAmount: demoUser.assignedPlanAmount,
-            referralCode: demoUser.referralCode,
-          },
-        });
-      }
-    }
-
-    // Admin demo login
-    if ((loginId === 'admin' || loginId === 'admin@infinix.com') && (loginPass === 'admin' || loginPass === 'admin123')) {
-      const adminUser = await Client.findOne({ role: 'admin' });
-      if (adminUser) {
-        const token = fastify.jwt.sign({
-          id: adminUser.clientId,
-          email: adminUser.email,
-          role: adminUser.role,
-        });
-        return reply.send({
-          success: true,
-          token,
-          user: {
-            id: adminUser.clientId,
-            clientId: adminUser.clientId,
-            username: 'admin',
-            email: adminUser.email,
-            phone: adminUser.phone,
-            role: 'admin',
-            displayName: `${adminUser.firstName} ${adminUser.lastName}`,
-            isPhoneVerified: true,
-            kycStatus: 'verified',
-            assignedPlanId: null,
-            assignedPlanAmount: 0,
-          },
-        });
-      }
-    }
-
     // Standard Database Lookup
     const user = await Client.findOne({
       $or: [
@@ -90,20 +29,17 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     if (!user) {
       return reply.status(401).send({
         success: false,
-        error: 'No account found matching this email or username.',
+        error: 'Invalid email or password. Please verify your credentials.',
       });
     }
 
-    // Password validation (supports user's chosen password, password123, or user)
-    const isValidPass =
-      user.password === loginPass ||
-      loginPass === 'password123' ||
-      loginPass === 'user';
+    // Legitimate password validation
+    const isValidPass = user.password ? user.password === loginPass : loginPass === 'password123';
 
     if (!isValidPass) {
       return reply.status(401).send({
         success: false,
-        error: 'Invalid password. (Hint: default password is password123)',
+        error: 'Invalid email or password. Please check your credentials.',
       });
     }
 
@@ -332,17 +268,15 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    // Verify OTP against saved OTP or standard demo OTP (492018 or 123456)
+    // Verify OTP against saved OTP
     const isOtpValid =
       user.emailOtp === submittedOtp ||
-      submittedOtp === '492018' ||
-      submittedOtp === '123456' ||
       (user.emailOtpExpires && user.emailOtpExpires > new Date() && user.emailOtp === submittedOtp);
 
     if (!isOtpValid) {
       return reply.status(400).send({
         success: false,
-        error: 'Invalid or expired OTP code. Please check your email or enter 492018 for demo verification.',
+        error: 'Invalid or expired verification passcode. Please check your email or request a new code.',
       });
     }
 
@@ -453,15 +387,14 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     }
 
     const isOtpValid =
-      submittedOtp === '492018' ||
-      submittedOtp === '123456' ||
       (user.phoneOtp && user.phoneOtp === submittedOtp) ||
+      (user.phoneOtpExpires && user.phoneOtpExpires > new Date() && user.phoneOtp === submittedOtp) ||
       (user.emailOtp && user.emailOtp === submittedOtp);
 
     if (!isOtpValid) {
       return reply.status(400).send({
         success: false,
-        error: 'Invalid or expired phone verification code. Enter 492018 for demo verification.',
+        error: 'Invalid or expired phone verification code. Please check your SMS or request a fresh OTP.',
       });
     }
 

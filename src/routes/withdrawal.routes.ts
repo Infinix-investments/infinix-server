@@ -21,7 +21,13 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         withdrawalId: w.withdrawalId,
         clientId: w.clientId,
         clientName: w.clientName,
-        amount: w.amount,
+        amount: w.netAmount ?? w.amount,
+        grossAmount: w.grossAmount ?? w.amount,
+        partIndex: w.partIndex ?? 1,
+        feePct: w.feePct ?? 3,
+        feeAmount: w.feeAmount ?? 0,
+        netAmount: w.netAmount ?? w.amount,
+        isLate: w.isLate ?? false,
         monthIndex: w.monthIndex,
         requestDate: w.requestDate,
         disbursedDate: w.disbursedDate,
@@ -33,32 +39,66 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     });
   });
 
-  // POST /api/withdrawals/request (Client requests monthly disbursement)
+  // POST /api/withdrawals/request (Client requests 15-day tranche disbursement)
   fastify.post('/request', async (request, reply) => {
-    const { clientId, bankAccount, notes } = request.body as any;
+    const { clientId, monthIndex, partIndex, bankAccount, notes } = request.body as any;
 
     const client = await Client.findOne({ clientId });
     if (!client) {
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
 
-    if (!client.assignedPlanAmount) {
+    if (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') {
       return reply.status(400).send({
         success: false,
         error: 'No active wealth plan assigned to this account.',
       });
     }
 
-    if (client.currentMonthWithdrawn) {
+    // 30-Day Independent Cycle Calculation
+    const startDate = client.assignedPlanStartDate
+      ? new Date(client.assignedPlanStartDate)
+      : new Date(client.joinedDate || Date.now());
+    const now = new Date();
+    const diffDays = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))) + 1;
+    const currentCycleMonth = Math.min(14, Math.max(1, Math.floor((diffDays - 1) / 30) + 1));
+    const dayInCycle = ((diffDays - 1) % 30) + 1;
+
+    const targetMonth = Number(monthIndex) || currentCycleMonth;
+    const targetPart = Number(partIndex) === 2 ? 2 : 1;
+
+    // Validate month boundary
+    if (targetMonth > currentCycleMonth) {
       return reply.status(400).send({
         success: false,
-        error: 'Monthly withdrawal already submitted or disbursed for the current cycle.',
+        error: `Month ${targetMonth} is currently locked. It will unlock when your 30-day cycle advances to Month ${targetMonth}.`,
       });
     }
 
-    // 15% contractual monthly disbursement calculation (7.5% profit + 7.5% principal return)
-    const monthlyRate = 0.15;
-    const amount = Math.round(client.assignedPlanAmount * monthlyRate);
+    // Check if target part is already requested/disbursed
+    const existing = await Withdrawal.findOne({
+      clientId: client.clientId,
+      monthIndex: targetMonth,
+      partIndex: targetPart,
+      status: { $in: ['pending_approval', 'disbursed'] },
+    });
+
+    if (existing) {
+      return reply.status(400).send({
+        success: false,
+        error: `Withdrawal for Month ${targetMonth} (Part ${targetPart}) is already ${existing.status === 'disbursed' ? 'settled' : 'under review'}.`,
+      });
+    }
+
+    // Overdue late fee: 6% if requesting a past month; 3% normal fee for active month
+    const isLate = targetMonth < currentCycleMonth;
+    const feePct = isLate ? 6 : 3;
+
+    // 15% monthly total, split into 2 tranches (7.5% per tranche)
+    const grossAmount = Math.round(client.assignedPlanAmount * 0.075);
+    const feeAmount = Math.round(grossAmount * (feePct / 100));
+    const netAmount = grossAmount - feeAmount;
+
     const withdrawalId = `wd-${Date.now().toString().slice(-4)}`;
     const requestDate = new Date().toISOString().split('T')[0];
 
@@ -66,15 +106,24 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       withdrawalId,
       clientId: client.clientId,
       clientName: `${client.firstName} ${client.lastName}`,
-      amount,
-      monthIndex: client.currentMonthIndex || 1,
+      amount: netAmount,
+      grossAmount,
+      partIndex: targetPart,
+      feePct,
+      feeAmount,
+      netAmount,
+      isLate,
+      monthIndex: targetMonth,
       requestDate,
       status: 'pending_approval',
       bankAccount: bankAccount || client.bankAccount || 'Client Verified Bank Account',
-      notes: notes || `Month ${client.currentMonthIndex || 1} contractual 15% disbursement request.`,
+      notes:
+        notes ||
+        `Month ${targetMonth} (Part ${targetPart} of 2) • ${
+          isLate ? '6% Late Withdrawal Fee (Overdue Cycle Claim)' : '3% Standard Withdrawal Fee'
+        }. Gross: ₹${grossAmount.toLocaleString('en-IN')}, Net: ₹${netAmount.toLocaleString('en-IN')}`,
     });
 
-    client.currentMonthWithdrawn = true;
     client.lastWithdrawalDate = requestDate;
     await client.save();
 
@@ -84,12 +133,16 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       adminName: 'Client Request',
       action: 'Withdrawal Requested',
       category: 'withdrawal_approval',
-      details: `${client.firstName} ${client.lastName} requested Month ${client.currentMonthIndex} disbursement of ₹${amount.toLocaleString('en-IN')}`,
+      details: `${client.firstName} ${client.lastName} requested Month ${targetMonth} Part ${targetPart} withdrawal of ₹${netAmount.toLocaleString(
+        'en-IN'
+      )} (Fee: ${feePct}% = ₹${feeAmount.toLocaleString('en-IN')})`,
     });
 
     return reply.status(201).send({
       success: true,
-      message: `Withdrawal request for ₹${amount.toLocaleString('en-IN')} submitted successfully.`,
+      message: `Withdrawal request for ₹${netAmount.toLocaleString(
+        'en-IN'
+      )} (Part ${targetPart} of Month ${targetMonth}) submitted successfully.`,
       data: withdrawal,
     });
   });
@@ -111,17 +164,19 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     if (status === 'disbursed') {
       withdrawal.disbursedDate = new Date().toISOString().split('T')[0];
 
-      // Add two ledger transactions: Profit yield + Capital return
-      const halfAmount = Math.round(withdrawal.amount / 2);
+      const grossAmount = withdrawal.grossAmount || withdrawal.amount;
+      const halfAmount = Math.round(grossAmount / 2);
 
       await Transaction.create({
         transactionId: `tx-${Date.now()}-1`,
         clientId: withdrawal.clientId,
         type: 'monthly_profit',
-        typeLabel: 'Monthly Profit Yield (7.5%)',
+        typeLabel: `Tranche Profit Yield (${withdrawal.partIndex === 2 ? 'Part 2' : 'Part 1'})`,
         amount: halfAmount,
         date: withdrawal.disbursedDate,
-        description: `Contractual monthly profit yield (Month ${withdrawal.monthIndex} / 14) • Ref ${utrReference || 'IMPS/NEFT'}`,
+        description: `Contractual 15-day profit tranche (Month ${withdrawal.monthIndex} / 14 • Part ${
+          withdrawal.partIndex || 1
+        }) • Ref ${utrReference || 'IMPS/NEFT'}`,
         currency: 'INR',
         status: 'settled',
       });
@@ -130,19 +185,34 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         transactionId: `tx-${Date.now()}-2`,
         clientId: withdrawal.clientId,
         type: 'capital_return',
-        typeLabel: 'Monthly Capital Return (7.5%)',
+        typeLabel: `Tranche Capital Return (${withdrawal.partIndex === 2 ? 'Part 2' : 'Part 1'})`,
         amount: halfAmount,
         date: withdrawal.disbursedDate,
-        description: `Contractual principal amortization (Month ${withdrawal.monthIndex} / 14) • Ref ${utrReference || 'IMPS/NEFT'}`,
+        description: `Contractual 15-day capital return (Month ${withdrawal.monthIndex} / 14 • Part ${
+          withdrawal.partIndex || 1
+        }) • Ref ${utrReference || 'IMPS/NEFT'}`,
         currency: 'INR',
         status: 'settled',
       });
 
-      // Update client month index
+      if (withdrawal.feeAmount && withdrawal.feeAmount > 0) {
+        await Transaction.create({
+          transactionId: `tx-${Date.now()}-fee`,
+          clientId: withdrawal.clientId,
+          type: 'fee',
+          typeLabel: `${withdrawal.feePct}% ${withdrawal.isLate ? 'Late' : 'Standard'} Processing Fee`,
+          amount: -withdrawal.feeAmount,
+          date: withdrawal.disbursedDate,
+          description: `${withdrawal.isLate ? 'Late withdrawal fee (6%)' : 'Standard withdrawal fee (3%)'} deducted from disbursement.`,
+          currency: 'INR',
+          status: 'settled',
+        });
+      }
+
+      // Update client state
       const client = await Client.findOne({ clientId: withdrawal.clientId });
       if (client) {
-        client.currentMonthIndex = Math.min(14, (client.currentMonthIndex || 1) + 1);
-        client.currentMonthWithdrawn = false;
+        client.lastWithdrawalDate = withdrawal.disbursedDate;
         await client.save();
       }
     }

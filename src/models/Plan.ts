@@ -5,6 +5,7 @@ export interface IPlan extends Document {
   planName: string;
   description: string;
   monthlyReturnPct: number;
+  dailyReturnPct: number;
   durationMonths: number;
   capitalReturnMonthlyPct: number;
   profitMonthlyPct: number;
@@ -24,12 +25,13 @@ const PlanSchema: Schema = new Schema(
     planName: { type: String, required: true },
     description: { type: String, required: true },
     monthlyReturnPct: { type: Number, required: true, default: 15.0 },
+    dailyReturnPct: { type: Number, required: true, default: 0.5 },
     durationMonths: { type: Number, required: true, default: 14 },
     capitalReturnMonthlyPct: { type: Number, required: true, default: 7.5 },
     profitMonthlyPct: { type: Number, required: true, default: 7.5 },
     grossTotalReturnPct: { type: Number, required: true, default: 210.0 },
     netProfitPct: { type: Number, required: true, default: 105.0 },
-    minInvestment: { type: Number, required: true, default: 1000000 },
+    minInvestment: { type: Number, required: true, default: 100000 },
     maxInvestment: { type: Number, required: true, default: 50000000 },
     isDefault: { type: Boolean, default: false },
     status: { type: String, enum: ['active', 'closed'], default: 'active' },
