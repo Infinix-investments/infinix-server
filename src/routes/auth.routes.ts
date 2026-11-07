@@ -272,7 +272,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
             level: 1,
             planName: '14-Month Wealth Accelerator',
             capitalAmount: 0,
-            commissionRatePct: 10.0,
+            commissionRatePct: 5.0,
             monthlyCommissionAmount: 0,
             totalEarnedAmount: 0,
             status: 'active',
