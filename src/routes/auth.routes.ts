@@ -399,7 +399,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
 
     return reply.send({
       success: true,
-      message: 'Email & passcode successfully verified! Welcome to INFINIX Private Wealth.',
+      message: 'Email & passcode successfully verified! Welcome to INFINIX.',
       token,
       isPhoneVerified: user.isPhoneVerified,
       user: {

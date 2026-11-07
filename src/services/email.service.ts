@@ -63,15 +63,15 @@ export async function sendOtpEmail(
   // Plain-text alternative (CRITICAL for anti-spam scoring)
   const textContent = `Hello ${recipientName},
 
-Your INFINIX Private Wealth 6-digit verification code is: ${otp}
+Your INFINIX 6-digit verification code is: ${otp}
 
-Enter this code in your INFINIX app to complete your registration and unlock your wealth account.
+Enter this code in your INFINIX app to complete your registration.
 This verification code is strictly confidential and expires in 15 minutes.
 
 If you did not request this verification code, please ignore this email or contact support.
 
 Regards,
-INFINIX Private Wealth & Yield Desk
+INFINIX
 Support: support@infinixwealth.com
 `;
 
@@ -92,7 +92,6 @@ Support: support@infinixwealth.com
           <tr>
             <td style="background-color: #080C14; padding: 28px 32px; text-align: left;">
               <span style="font-size: 20px; font-weight: 800; color: #D4AF37; letter-spacing: 2px;">INFINIX</span>
-              <span style="font-size: 11px; font-weight: 700; color: #94A3B8; letter-spacing: 1px; margin-left: 8px;">PRIVATE WEALTH</span>
             </td>
           </tr>
           <!-- Body Content -->
@@ -126,8 +125,8 @@ Support: support@infinixwealth.com
           <!-- Footer -->
           <tr>
             <td style="background-color: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 20px 32px; font-size: 12px; color: #94A3B8; line-height: 18px;">
-              <p style="margin: 0 0 4px 0;">This is an automated transactional security alert from <strong>INFINIX Private Wealth</strong>.</p>
-              <p style="margin: 0;">Secured by 256-Bit Financial Encryption • Institutional Private Wealth Desk</p>
+              <p style="margin: 0 0 4px 0;">This is an automated transactional security alert from <strong>INFINIX</strong>.</p>
+              <p style="margin: 0;">Secured by 256-Bit Financial Encryption • INFINIX</p>
             </td>
           </tr>
         </table>
@@ -221,7 +220,7 @@ export async function sendPasswordResetEmail(
 
   const textContent = `Hello ${recipientName},
 
-We received a request to reset your password for your INFINIX Private Wealth account.
+We received a request to reset your password for your INFINIX account.
 Your 6-digit password reset verification code is: ${otp}
 
 Enter this code in the INFINIX app to choose a new password.
@@ -230,7 +229,7 @@ This reset code expires in 15 minutes and should never be shared.
 If you did not request a password reset, please ignore this email. Your existing password remains secure.
 
 Regards,
-INFINIX Private Wealth Security Desk
+INFINIX
 `;
 
   const htmlContent = `<!DOCTYPE html>
@@ -249,7 +248,6 @@ INFINIX Private Wealth Security Desk
           <tr>
             <td style="background-color: #080C14; padding: 28px 32px; text-align: left;">
               <span style="font-size: 20px; font-weight: 800; color: #D4AF37; letter-spacing: 2px;">INFINIX</span>
-              <span style="font-size: 11px; font-weight: 700; color: #94A3B8; letter-spacing: 1px; margin-left: 8px;">SECURITY DESK</span>
             </td>
           </tr>
           <!-- Body Content -->
@@ -258,7 +256,7 @@ INFINIX Private Wealth Security Desk
               <h1 style="font-size: 22px; font-weight: 700; color: #0F172A; margin: 0 0 12px 0;">Reset Your Password</h1>
               <p style="font-size: 15px; line-height: 24px; color: #334155; margin: 0 0 20px 0;">
                 Hello <strong>${recipientName}</strong>,<br>
-                We received a request to reset your password for your INFINIX Wealth account. Use the 6-digit verification code below to authorize your password reset:
+                We received a request to reset your password for your INFINIX account. Use the 6-digit verification code below to authorize your password reset:
               </p>
 
               <!-- OTP Box -->
@@ -283,8 +281,8 @@ INFINIX Private Wealth Security Desk
           <!-- Footer -->
           <tr>
             <td style="background-color: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 20px 32px; font-size: 12px; color: #94A3B8; line-height: 18px;">
-              <p style="margin: 0 0 4px 0;">This is an automated security communication from <strong>INFINIX Private Wealth</strong>.</p>
-              <p style="margin: 0;">Secured by 256-Bit Financial Encryption • Institutional Private Wealth Desk</p>
+              <p style="margin: 0 0 4px 0;">This is an automated security communication from <strong>INFINIX</strong>.</p>
+              <p style="margin: 0;">Secured by 256-Bit Financial Encryption • INFINIX</p>
             </td>
           </tr>
         </table>

@@ -50,7 +50,7 @@ async function main() {
     server.get('/', async () => {
       return {
         status: 'ok',
-        service: 'INFINIX Institutional Wealth API Engine',
+        service: 'INFINIX API Engine',
         timestamp: new Date().toISOString(),
         version: '1.0.0',
       };
@@ -59,7 +59,7 @@ async function main() {
     server.get('/api/health', async () => {
       return {
         status: 'ok',
-        service: 'INFINIX Institutional Wealth API Engine',
+        service: 'INFINIX API Engine',
         timestamp: new Date().toISOString(),
         version: '1.0.0',
       };
