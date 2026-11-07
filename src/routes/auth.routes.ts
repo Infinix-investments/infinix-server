@@ -133,7 +133,9 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       existing.emailOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
       await existing.save();
 
-      await sendOtpEmail(cleanEmail, generatedOtp, cleanFirstName);
+      sendOtpEmail(cleanEmail, generatedOtp, cleanFirstName).catch((err) => {
+        console.error('[Auth] Background email dispatch error:', err.message);
+      });
 
       const token = fastify.jwt.sign({
         id: existing.clientId,
@@ -249,8 +251,10 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       }
     }
 
-    // Send 6-digit passcode to user's email
-    await sendOtpEmail(cleanEmail, generatedOtp, cleanFirstName);
+    // Send 6-digit passcode to user's email asynchronously so client never hangs
+    sendOtpEmail(cleanEmail, generatedOtp, cleanFirstName).catch((err) => {
+      console.error('[Auth] Background email dispatch error:', err.message);
+    });
 
     await AuditLog.create({
       auditId: `audit-${Date.now()}`,
@@ -514,7 +518,9 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     user.emailOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save();
 
-    await sendOtpEmail(user.email, newOtp, user.firstName);
+    sendOtpEmail(user.email, newOtp, user.firstName).catch((err) => {
+      console.error('[Auth] Background resend email dispatch error:', err.message);
+    });
 
     return reply.send({
       success: true,

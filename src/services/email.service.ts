@@ -37,6 +37,9 @@ function getTransporter(): Transporter | null {
     tls: {
       rejectUnauthorized: false,
     },
+    connectionTimeout: 8000,
+    greetingTimeout: 5000,
+    socketTimeout: 10000,
   });
 
   return transporterInstance;
@@ -63,7 +66,7 @@ export async function sendOtpEmail(
   }
 
   const fromEmail = process.env.SMTP_FROM_EMAIL || 'infinixinvestments.info@gmail.com';
-  const fromName = process.env.SMTP_FROM_NAME || 'INFINIX Private Wealth';
+  const fromName = process.env.SMTP_FROM_NAME || 'INFINIX';
   const cleanToEmail = toEmail.trim().toLowerCase();
 
   // Plain-text alternative (CRITICAL for anti-spam scoring)
