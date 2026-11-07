@@ -1,8 +1,9 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import bcrypt from 'bcryptjs';
 import { Client } from '../models/Client.js';
 import { Referral } from '../models/Referral.js';
 import { AuditLog } from '../models/AuditLog.js';
-import { sendOtpEmail } from '../services/email.service.js';
+import { sendOtpEmail, sendPasswordResetEmail } from '../services/email.service.js';
 
 export async function authRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   // POST /api/auth/login
@@ -34,8 +35,27 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    // Legitimate password validation
-    const isValidPass = user.password ? user.password === loginPass : loginPass === 'password123';
+    // Secure password validation: bcrypt hash compare with legacy plain-text fallback
+    let isValidPass = false;
+    const isBcryptHash = Boolean(user.password && user.password.startsWith('$2'));
+
+    if (isBcryptHash) {
+      isValidPass = await bcrypt.compare(loginPass, user.password!);
+    } else {
+      const storedPass = user.password || 'password123';
+      isValidPass = storedPass === loginPass;
+
+      // Automatically upgrade legacy plain-text password to bcrypt hash on successful sign in
+      if (isValidPass) {
+        try {
+          user.password = await bcrypt.hash(loginPass, 10);
+          await user.save();
+          console.log(`[Auth] Upgraded password to bcrypt for client: ${user.clientId}`);
+        } catch (upgradeErr: any) {
+          console.error('[Auth] Password auto-hash upgrade notice:', upgradeErr.message);
+        }
+      }
+    }
 
     if (!isValidPass) {
       return reply.status(401).send({
@@ -72,11 +92,12 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     });
   });
 
-  // POST /api/auth/register (First name, Last name, Email, Password -> Passcode sent to email)
+  // POST /api/auth/register (First name, Last name, Email, Password, Confirm Password -> Passcode sent to email)
   fastify.post('/register', async (request, reply) => {
-    const { email, password, firstName, lastName, fullName, referralCode } = request.body as any;
+    const { email, password, confirmPassword, firstName, lastName, fullName, referralCode } = request.body as any;
     const cleanEmail = (email || '').trim().toLowerCase();
     const cleanPassword = (password || '').trim();
+    const cleanConfirm = (confirmPassword || '').trim();
     let cleanFirstName = (firstName || '').trim();
     let cleanLastName = (lastName || '').trim();
 
@@ -114,6 +135,16 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
+    if (cleanConfirm && cleanPassword !== cleanConfirm) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Passwords do not match. Please verify your password.',
+      });
+    }
+
+    // Salt and hash password with bcrypt
+    const hashedPassword = await bcrypt.hash(cleanPassword, 10);
+
     const existing = await Client.findOne({ email: cleanEmail });
     if (existing) {
       // If already verified, require signing in
@@ -127,7 +158,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       // If pending verification, update info and send fresh passcode
       existing.firstName = cleanFirstName;
       existing.lastName = cleanLastName;
-      existing.password = cleanPassword;
+      existing.password = hashedPassword;
       const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
       existing.emailOtp = generatedOtp;
       existing.emailOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
@@ -196,7 +227,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       lastName: cleanLastName,
       email: cleanEmail,
       phone: '', // No phone needed at registration
-      password: cleanPassword,
+      password: hashedPassword,
       role: 'client',
       status: 'pending',
       tier: 'standard',
@@ -423,7 +454,6 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     return reply.send({
       success: true,
       message: `Verification code sent via SMS to ${cleanPhone}.`,
-      demoOtp: phoneOtp,
     });
   });
 
@@ -523,6 +553,218 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     return reply.send({
       success: true,
       message: `A new 6-digit OTP was dispatched to ${user.email}.`,
+    });
+  });
+
+  // POST /api/auth/forgot-password (Dispatches 6-digit password reset OTP to email)
+  fastify.post('/forgot-password', async (request, reply) => {
+    const { email } = request.body as any;
+    const cleanEmail = (email || '').trim().toLowerCase();
+
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please enter a valid email address.',
+      });
+    }
+
+    const user = await Client.findOne({ email: cleanEmail });
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: 'No investor account found registered with this email address.',
+      });
+    }
+
+    const resetOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.emailOtp = resetOtp;
+    user.emailOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
+    await user.save();
+
+    sendPasswordResetEmail(user.email, resetOtp, user.firstName).catch((err) => {
+      console.error('[Auth] Background password reset email dispatch error:', err.message);
+    });
+
+    await AuditLog.create({
+      auditId: `audit-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      adminName: 'Security Service',
+      action: 'Password Reset Initiated',
+      category: 'client_verification',
+      details: `Password reset requested for ${user.firstName} ${user.lastName} (${user.email}). Reset code dispatched to email.`,
+    });
+
+    return reply.send({
+      success: true,
+      message: `A 6-digit password reset code has been sent to ${cleanEmail}.`,
+    });
+  });
+
+  // POST /api/auth/reset-password (Verifies OTP and resets password with bcrypt hash)
+  fastify.post('/reset-password', async (request, reply) => {
+    const { email, otp, code, newPassword, password, confirmPassword } = request.body as any;
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const submittedOtp = (otp || code || '').trim();
+    const cleanNewPass = (newPassword || password || '').trim();
+    const cleanConfirm = (confirmPassword || '').trim();
+
+    if (!cleanEmail) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please provide your account email address.',
+      });
+    }
+
+    if (!submittedOtp) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please enter the 6-digit password reset code sent to your email.',
+      });
+    }
+
+    if (!cleanNewPass || cleanNewPass.length < 4) {
+      return reply.status(400).send({
+        success: false,
+        error: 'New password must be at least 4 characters long.',
+      });
+    }
+
+    if (cleanConfirm && cleanNewPass !== cleanConfirm) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Passwords do not match. Please verify your new password.',
+      });
+    }
+
+    const user = await Client.findOne({ email: cleanEmail });
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: 'No account found with this email address.',
+      });
+    }
+
+    const isCodeValid =
+      user.emailOtp &&
+      user.emailOtp === submittedOtp &&
+      user.emailOtpExpires &&
+      user.emailOtpExpires > new Date();
+
+    if (!isCodeValid) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Invalid or expired reset code. Please request a new code.',
+      });
+    }
+
+    // Salt and hash new password with bcrypt
+    const hashedPassword = await bcrypt.hash(cleanNewPass, 10);
+    user.password = hashedPassword;
+    user.emailOtp = undefined;
+    user.emailOtpExpires = undefined;
+    await user.save();
+
+    await AuditLog.create({
+      auditId: `audit-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      adminName: 'Security Service',
+      action: 'Password Reset Completed',
+      category: 'client_verification',
+      details: `Password successfully updated via OTP reset for ${user.firstName} ${user.lastName} (${user.email}).`,
+    });
+
+    return reply.send({
+      success: true,
+      message: 'Your password has been successfully reset! You can now sign in with your new password.',
+    });
+  });
+
+  // POST /api/auth/change-password (Authenticated Settings Reset)
+  fastify.post('/change-password', async (request, reply) => {
+    const { clientId, email, currentPassword, newPassword, confirmPassword } = request.body as any;
+    const cleanId = (clientId || '').trim();
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanCurrent = (currentPassword || '').trim();
+    const cleanNewPass = (newPassword || '').trim();
+    const cleanConfirm = (confirmPassword || '').trim();
+
+    if (!cleanId && !cleanEmail) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Client identification required.',
+      });
+    }
+
+    if (!cleanCurrent) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please enter your current password.',
+      });
+    }
+
+    if (!cleanNewPass || cleanNewPass.length < 4) {
+      return reply.status(400).send({
+        success: false,
+        error: 'New password must be at least 4 characters long.',
+      });
+    }
+
+    if (cleanConfirm && cleanNewPass !== cleanConfirm) {
+      return reply.status(400).send({
+        success: false,
+        error: 'New passwords do not match. Please verify your new password.',
+      });
+    }
+
+    const user = await Client.findOne({
+      $or: [
+        ...(cleanId ? [{ clientId: cleanId }] : []),
+        ...(cleanEmail ? [{ email: cleanEmail }] : []),
+      ],
+    });
+
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: 'User account not found.',
+      });
+    }
+
+    // Verify current password against stored bcrypt hash or legacy string
+    let isCurrentValid = false;
+    const isBcryptHash = Boolean(user.password && user.password.startsWith('$2'));
+
+    if (isBcryptHash) {
+      isCurrentValid = await bcrypt.compare(cleanCurrent, user.password!);
+    } else {
+      const storedPass = user.password || 'password123';
+      isCurrentValid = storedPass === cleanCurrent;
+    }
+
+    if (!isCurrentValid) {
+      return reply.status(401).send({
+        success: false,
+        error: 'Current password is incorrect. Please check and try again.',
+      });
+    }
+
+    // Hash and store new password
+    const hashedPassword = await bcrypt.hash(cleanNewPass, 10);
+    user.password = hashedPassword;
+    await user.save();
+
+    await AuditLog.create({
+      auditId: `audit-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      adminName: 'Security Service',
+      action: 'Password Changed from Settings',
+      category: 'client_verification',
+      details: `Password changed from settings for ${user.firstName} ${user.lastName} (${user.email}).`,
+    });
+
+    return reply.send({
+      success: true,
+      message: 'Password changed successfully! Your account is protected with the updated credentials.',
     });
   });
 }

@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import bcrypt from 'bcryptjs';
 import { Client } from '../models/Client.js';
 import { Plan } from '../models/Plan.js';
 import { Investment } from '../models/Investment.js';
@@ -123,6 +124,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
 
     const clientId = `c-${Date.now().toString().slice(-4)}`;
     const referralCode = `INF-${body.firstName.toUpperCase()}${clientId.slice(-3)}`;
+    const hashedPassword = await bcrypt.hash((body.password || 'password123').trim(), 10);
 
     const client = await Client.create({
       clientId,
@@ -130,7 +132,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       lastName: body.lastName || 'Client',
       email: cleanEmail,
       phone: body.phone || '+91 98000 00000',
-      password: body.password || 'password123',
+      password: hashedPassword,
       role: 'client',
       status: body.status || 'active',
       tier: body.tier || 'standard',
