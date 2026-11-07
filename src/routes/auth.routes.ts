@@ -147,7 +147,6 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
         success: true,
         message: `A 6-digit verification passcode has been dispatched to ${cleanEmail}.`,
         token,
-        demoOtp: generatedOtp,
         user: {
           id: existing.clientId,
           clientId: existing.clientId,
@@ -275,7 +274,6 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       success: true,
       message: `Registration initiated! A 6-digit passcode has been sent to ${cleanEmail}.`,
       token,
-      demoOtp: generatedOtp,
       user: {
         id: newClient.clientId,
         clientId: newClient.clientId,
@@ -525,7 +523,6 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     return reply.send({
       success: true,
       message: `A new 6-digit OTP was dispatched to ${user.email}.`,
-      demoOtp: newOtp,
     });
   });
 }

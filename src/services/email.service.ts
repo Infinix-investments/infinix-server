@@ -56,15 +56,6 @@ export async function sendOtpEmail(
   console.log(`⏱️   VALID FOR 15 MINUTES`);
   console.log(`================================================================\n`);
 
-  const transporter = getTransporter();
-
-  if (!transporter) {
-    return {
-      sent: true,
-      message: `OTP [${otp}] dispatched in local simulation mode.`,
-    };
-  }
-
   const fromEmail = process.env.SMTP_FROM_EMAIL || 'infinixinvestments.info@gmail.com';
   const fromName = process.env.SMTP_FROM_NAME || 'INFINIX';
   const cleanToEmail = toEmail.trim().toLowerCase();
@@ -146,6 +137,48 @@ Support: support@infinixwealth.com
 </body>
 </html>`;
 
+  // 1. PRIMARY: Brevo HTTPS REST API (Port 443 - NEVER blocked by Render firewall!)
+  const brevoApiKey = process.env.BREVO_API_KEY || process.env.SMTP_API_KEY;
+  if (brevoApiKey) {
+    try {
+      const apiRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'accept': 'application/json',
+          'api-key': brevoApiKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          sender: { name: fromName, email: fromEmail },
+          to: [{ email: cleanToEmail, name: recipientName }],
+          subject: `${otp} is your INFINIX verification code`,
+          textContent: textContent,
+          htmlContent: htmlContent,
+        }),
+      });
+
+      const apiData: any = await apiRes.json();
+      if (apiRes.ok && apiData?.messageId) {
+        console.log(`[Email Service - HTTPS API] ✅ Email sent to ${cleanToEmail}. MessageId: ${apiData.messageId}`);
+        return { sent: true, message: `Verification code successfully sent to ${cleanToEmail}.` };
+      } else {
+        console.error(`[Email Service - HTTPS API] ❌ Brevo API error:`, apiData);
+      }
+    } catch (apiErr: any) {
+      console.error(`[Email Service - HTTPS API] ❌ Network error: ${apiErr.message}`);
+    }
+  }
+
+  // 2. SECONDARY: Standard SMTP via Nodemailer
+  const transporter = getTransporter();
+
+  if (!transporter) {
+    return {
+      sent: true,
+      message: `OTP [${otp}] dispatched in local simulation mode.`,
+    };
+  }
+
   try {
     const info = await transporter.sendMail({
       from: `"${fromName}" <${fromEmail}>`,
@@ -163,10 +196,10 @@ Support: support@infinixwealth.com
       },
     });
 
-    console.log(`[Email Service] ✅ Successfully sent verification email to ${cleanToEmail}. MessageId: ${info.messageId}`);
+    console.log(`[Email Service - SMTP] ✅ Successfully sent verification email to ${cleanToEmail}. MessageId: ${info.messageId}`);
     return { sent: true, message: `Verification code successfully sent to ${cleanToEmail}.` };
   } catch (error: any) {
-    console.error(`[Email Service] ❌ Failed to send email via SMTP: ${error.message}`);
+    console.error(`[Email Service - SMTP] ❌ Failed to send email via SMTP: ${error.message}`);
     return { sent: false, message: error.message };
   }
 }
