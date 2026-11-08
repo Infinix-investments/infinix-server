@@ -59,6 +59,25 @@ async function main() {
       };
     });
 
+    // 3b. App Version & In-App APK Downloader fallback endpoint
+    server.get('/api/app/version', async () => {
+      return {
+        success: true,
+        data: {
+          latestVersion: process.env.LATEST_APP_VERSION || '1.0.0',
+          minRequiredVersion: process.env.MIN_REQUIRED_APP_VERSION || '1.0.0',
+          apkUrl:
+            process.env.APP_APK_DOWNLOAD_URL ||
+            'https://github.com/Infinix-investments/investment-portfolio-dashboard/releases/latest/download/infinix.apk',
+          releaseNotes:
+            process.env.APP_RELEASE_NOTES ||
+            'Full USDT transition, dynamic wealth plan structures, and enhanced connection stability.',
+          mandatory: process.env.APP_UPDATE_MANDATORY === 'true',
+          publishedAt: new Date().toISOString(),
+        },
+      };
+    });
+
     // 4. Register Modular Routes
     await server.register(authRoutes, { prefix: '/api/auth' });
     await server.register(clientRoutes, { prefix: '/api/clients' });
