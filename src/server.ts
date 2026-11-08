@@ -81,6 +81,17 @@ async function main() {
     connectDB()
       .then(() => seedDatabase(false))
       .catch((err) => console.error('[Database] Background connection error:', err));
+
+    // 7. Self keep-alive ping to prevent Render free-tier sleep
+    const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://infinix-server.onrender.com';
+    setInterval(async () => {
+      try {
+        await fetch(`${RENDER_URL}/api/health`);
+        console.log(`[KeepAlive] Heartbeat ping dispatched to ${RENDER_URL}/api/health`);
+      } catch (err) {
+        console.warn('[KeepAlive] Heartbeat ping warning:', err);
+      }
+    }, 10 * 60 * 1000); // Ping every 10 minutes (Render sleep timeout is 15m)
   } catch (error) {
     server.log.error(error);
     process.exit(1);
