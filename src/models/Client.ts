@@ -91,7 +91,7 @@ const ClientSchema: Schema = new Schema(
     lastWithdrawalDate: { type: String },
     bankAccount: { type: String, default: '' },
     totalAum: { type: Number, default: 0 },
-    currency: { type: String, default: 'INR' },
+    currency: { type: String, default: 'USDT' },
     portfolioCount: { type: Number, default: 1 },
     notes: { type: String, default: '' },
     referralCode: { type: String, index: true },

@@ -31,7 +31,7 @@ const TransactionSchema: Schema = new Schema(
     amount: { type: Number, required: true },
     date: { type: String, required: true },
     description: { type: String, required: true },
-    currency: { type: String, default: 'INR' },
+    currency: { type: String, default: 'USDT' },
     status: { type: String, enum: ['settled', 'pending'], default: 'settled' },
   },
   {

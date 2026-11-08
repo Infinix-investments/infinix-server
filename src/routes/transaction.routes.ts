@@ -52,7 +52,7 @@ export async function transactionRoutes(fastify: FastifyInstance, options: Fasti
       amount: Number(body.amount),
       date: body.date || new Date().toISOString().split('T')[0],
       description: body.description || '',
-      currency: body.currency || 'INR',
+      currency: body.currency || 'USDT',
       status: body.status || 'settled',
     });
 

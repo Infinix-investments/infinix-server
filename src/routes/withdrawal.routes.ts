@@ -177,7 +177,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         description: `Contractual 15-day profit tranche (Month ${withdrawal.monthIndex} / 14 • Part ${
           withdrawal.partIndex || 1
         }) • Ref ${utrReference || 'IMPS/NEFT'}`,
-        currency: 'INR',
+        currency: 'USDT',
         status: 'settled',
       });
 
@@ -191,7 +191,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         description: `Contractual 15-day capital return (Month ${withdrawal.monthIndex} / 14 • Part ${
           withdrawal.partIndex || 1
         }) • Ref ${utrReference || 'IMPS/NEFT'}`,
-        currency: 'INR',
+        currency: 'USDT',
         status: 'settled',
       });
 
@@ -204,7 +204,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
           amount: -withdrawal.feeAmount,
           date: withdrawal.disbursedDate,
           description: `${withdrawal.isLate ? 'Late withdrawal fee (6%)' : 'Standard withdrawal fee (3%)'} deducted from disbursement.`,
-          currency: 'INR',
+          currency: 'USDT',
           status: 'settled',
         });
       }

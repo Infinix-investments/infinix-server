@@ -57,7 +57,7 @@ export async function investmentRoutes(fastify: FastifyInstance, options: Fastif
       investedAmount: Number(body.investedAmount),
       currentValue: Number(body.currentValue ?? body.investedAmount),
       currentPrice: Number(body.currentPrice ?? body.investedAmount),
-      currency: body.currency || 'INR',
+      currency: body.currency || 'USDT',
       investmentDate: body.investmentDate || new Date().toISOString().split('T')[0],
       valuationDate: body.valuationDate || new Date().toISOString().split('T')[0],
       valuationType: body.valuationType || 'manual',

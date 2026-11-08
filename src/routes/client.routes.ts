@@ -218,7 +218,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       investedAmount: amount,
       currentValue: amount,
       currentPrice: amount,
-      currency: 'INR',
+      currency: 'USDT',
       investmentDate: activeStartDate,
       valuationDate: activeStartDate,
       valuationType: 'manual',

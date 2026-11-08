@@ -63,7 +63,7 @@ const InvestmentSchema: Schema = new Schema(
     investedAmount: { type: Number, required: true },
     currentValue: { type: Number, required: true },
     currentPrice: { type: Number, required: true },
-    currency: { type: String, default: 'INR' },
+    currency: { type: String, default: 'USDT' },
     investmentDate: { type: String },
     valuationDate: { type: String, required: true },
     valuationType: { type: String, enum: ['live_market', 'manual'], default: 'manual' },
