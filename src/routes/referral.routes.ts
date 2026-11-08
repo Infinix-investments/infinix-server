@@ -53,7 +53,7 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
             level: 1,
             planName: rc.assignedPlanName || '14-Month Wealth Accelerator',
             capitalAmount: cap,
-            commissionRatePct: 5.0,
+            commissionRatePct: 10.0,
             monthlyCommissionAmount: comm,
             totalEarnedAmount: comm,
             status: rc.assignedPlanStatus === 'active' ? 'active' : 'pending',
@@ -123,9 +123,9 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
     const level = Number(body.level) || 1;
     
     // Level specific commission percentage of ROI:
-    // Level 1: 5%, Level 2: 5%, Level 3: 3%, Level 4: 2%, Level 5: 1%
+    // Level 1: 10%, Level 2: 5%, Level 3: 3%, Level 4: 2%, Level 5: 1%
     const levelPercentages: Record<number, number> = {
-      1: 5.0,
+      1: 10.0,
       2: 5.0,
       3: 3.0,
       4: 2.0,

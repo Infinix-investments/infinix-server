@@ -336,9 +336,9 @@ export const SEED_REFERRALS = [
     level: 1,
     planName: '14-Month 15% Return Accelerator',
     capitalAmount: 5000000,
-    commissionRatePct: 5.0, // 5% of monthly ROI (15% of 50L = 7.5L -> 37.5K/mo)
-    monthlyCommissionAmount: 37500,
-    totalEarnedAmount: 150000,
+    commissionRatePct: 10.0, // 10% of monthly ROI (15% of 50L = 7.5L -> 75K/mo)
+    monthlyCommissionAmount: 75000,
+    totalEarnedAmount: 300000,
     status: 'active' as const,
     dateJoined: '2026-07-10',
   },
@@ -354,7 +354,7 @@ export const SEED_REFERRALS = [
     level: 1,
     planName: 'Pending Plan Allocation',
     capitalAmount: 0,
-    commissionRatePct: 5.0,
+    commissionRatePct: 10.0,
     monthlyCommissionAmount: 0,
     totalEarnedAmount: 0,
     status: 'pending_activation' as const,
@@ -366,10 +366,10 @@ export const SEED_REFERRAL_TIERS = [
   {
     level: 1,
     name: 'Level 1: Direct Wealth Partner',
-    commissionPct: 5.0, // 5% of referred person's ROI
+    commissionPct: 10.0, // 10% of referred person's ROI
     minTeamAum: 0,
     minDirectReferrals: 2, // Unlocks after 2 successful referrals who start a plan
-    description: 'Earn 5% of the monthly ROI earned by your 2 direct referrals who start an active plan.',
+    description: 'Earn 10% of the monthly ROI earned by your 2 direct referrals who start an active plan.',
     totalMembersCount: 24,
     totalVolumeGenerated: 45000000,
     status: 'active' as const,
