@@ -58,8 +58,8 @@ export async function planRoutes(fastify: FastifyInstance, options: FastifyPlugi
       profitMonthlyPct: Number(body.profitMonthlyPct) || 7.5,
       grossTotalReturnPct,
       netProfitPct: Number(body.netProfitPct) || (grossTotalReturnPct - 100),
-      minInvestment: Number(body.minInvestment) || 100000,
-      maxInvestment: Number(body.maxInvestment) || 50000000,
+      minInvestment: body.minInvestment !== undefined ? Number(body.minInvestment) : 100,
+      maxInvestment: body.maxInvestment !== undefined ? Number(body.maxInvestment) : 10000000,
       isDefault: !!body.isDefault,
       status: body.status || 'active',
     });
