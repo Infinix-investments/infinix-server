@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { Client } from '../models/Client.js';
 import { Plan } from '../models/Plan.js';
 import { Investment } from '../models/Investment.js';
+import { Referral } from '../models/Referral.js';
 import { AuditLog } from '../models/AuditLog.js';
 
 export async function clientRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
@@ -170,13 +171,29 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     const { id } = request.params as any;
     const updates = request.body as any;
 
-    const client = await Client.findOne({ clientId: id });
+    const client = (await Client.findOne({ clientId: id })) || (await Client.findById(id));
     if (!client) {
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
 
     Object.assign(client, updates);
     await client.save();
+
+    // If assigned plan was revoked or cleared via PATCH
+    if (updates.assignedPlanStatus === 'pending_assignment' || updates.assignedPlanId === null) {
+      await Investment.deleteMany({
+        clientId: client.clientId,
+        assetClass: 'private_plan',
+      });
+      await Referral.updateMany(
+        { refereeId: client.clientId },
+        {
+          status: 'pending',
+          capitalAmount: 0,
+          monthlyCommissionAmount: 0,
+        }
+      );
+    }
 
     return reply.send({ success: true, data: client });
   });
@@ -186,7 +203,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     const { id } = request.params as any;
     const { planId, capitalAmount, startDate, paymentReference, adminName } = request.body as any;
 
-    const client = await Client.findOne({ clientId: id });
+    const client = (await Client.findOne({ clientId: id })) || (await Client.findById(id));
     if (!client) {
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
@@ -206,7 +223,13 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     client.isPhoneVerified = true;
     await client.save();
 
-    // Create or update matching investment record
+    // Remove any previous private_plan investment before creating the new active one
+    await Investment.deleteMany({
+      clientId: client.clientId,
+      assetClass: 'private_plan',
+    });
+
+    // Create matching investment record
     const investmentId = `inv-${Date.now().toString().slice(-4)}`;
     await Investment.create({
       investmentId,
@@ -233,6 +256,17 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       ],
     });
 
+    // Update referrals where this client is the referee to active
+    await Referral.updateMany(
+      { refereeId: client.clientId },
+      {
+        status: 'active',
+        planName,
+        capitalAmount: amount,
+        monthlyCommissionAmount: Math.round(amount * 0.15 * 0.10),
+      }
+    );
+
     // Record in Audit Log
     await AuditLog.create({
       auditId: `audit-${Date.now()}`,
@@ -240,12 +274,69 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       adminName: adminName || 'Administrator',
       action: 'Plan Activated (Payment Verified)',
       category: 'plan_assignment',
-      details: `Payment verified & activated ${planName} (₹${amount.toLocaleString('en-IN')}) for ${client.firstName} ${client.lastName} (${client.clientId}). Start Date: ${activeStartDate}. Ref: ${paymentReference || 'Bank Escrow Verified'}.`,
+      details: `Payment verified & activated ${planName} (${amount.toLocaleString('en-US')} USDT) for ${client.firstName} ${client.lastName} (${client.clientId}). Start Date: ${activeStartDate}. Ref: ${paymentReference || 'Direct USDT Escrow Verified'}.`,
     });
 
     return reply.send({
       success: true,
       message: `Payment verified. "${planName}" successfully activated for ${client.firstName} ${client.lastName}.`,
+      data: client,
+    });
+  });
+
+  // POST /api/clients/:id/revoke-plan (Revoke active investment plan)
+  fastify.post('/:id/revoke-plan', async (request, reply) => {
+    const { id } = request.params as any;
+    const { adminName, reason } = (request.body as any) || {};
+
+    const client = (await Client.findOne({ clientId: id })) || (await Client.findById(id));
+    if (!client) {
+      return reply.status(404).send({ success: false, error: 'Client not found.' });
+    }
+
+    const prevPlanName = client.assignedPlanName || 'Private Wealth Plan';
+    const prevAmount = client.assignedPlanAmount || 0;
+
+    // Reset client plan state
+    client.assignedPlanId = null;
+    client.assignedPlanName = undefined;
+    client.assignedPlanAmount = 0;
+    client.assignedPlanStartDate = undefined;
+    client.assignedPlanStatus = 'pending_assignment';
+    client.totalAum = 0;
+    client.currentMonthWithdrawn = false;
+    client.currentMonthIndex = 1;
+    await client.save();
+
+    // Delete active private_plan investment records so they disappear from client portfolio
+    await Investment.deleteMany({
+      clientId: client.clientId,
+      assetClass: 'private_plan',
+    });
+
+    // Reset referral commissions associated with this referee back to pending
+    await Referral.updateMany(
+      { refereeId: client.clientId },
+      {
+        status: 'pending',
+        capitalAmount: 0,
+        monthlyCommissionAmount: 0,
+      }
+    );
+
+    // Record in Audit Log
+    await AuditLog.create({
+      auditId: `audit-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      adminName: adminName || 'Chief Wealth Admin (Altaf)',
+      action: 'Plan Revoked',
+      category: 'plan_assignment',
+      details: `Revoked active investment plan "${prevPlanName}" (${prevAmount.toLocaleString('en-US')} USDT) from ${client.firstName} ${client.lastName} (${client.clientId}). Account returned to pending allocation.${reason ? ` Reason: ${reason}` : ''}`,
+    });
+
+    return reply.send({
+      success: true,
+      message: `Investment plan revoked successfully for ${client.firstName} ${client.lastName}.`,
       data: client,
     });
   });
