@@ -27,13 +27,7 @@ const server = Fastify({
 
 async function main() {
   try {
-    // 1. Connect to MongoDB Atlas
-    await connectDB();
-
-    // 2. Auto-seed if collections are empty
-    await seedDatabase(false);
-
-    // 3. Register CORS (permits both mobile clients and web admin interface)
+    // 1. Register CORS (permits both mobile clients and web admin interface)
     await server.register(cors, {
       origin: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -41,12 +35,12 @@ async function main() {
       credentials: true,
     });
 
-    // 4. Register JWT
+    // 2. Register JWT
     await server.register(jwt, {
       secret: JWT_SECRET,
     });
 
-    // 5. Health Check & Root Endpoints
+    // 3. Health Check & Root Endpoints (instant response for Render & apps)
     server.get('/', async () => {
       return {
         status: 'ok',
@@ -65,7 +59,7 @@ async function main() {
       };
     });
 
-    // 6. Register Modular Routes
+    // 4. Register Modular Routes
     await server.register(authRoutes, { prefix: '/api/auth' });
     await server.register(clientRoutes, { prefix: '/api/clients' });
     await server.register(planRoutes, { prefix: '/api/plans' });
@@ -75,13 +69,18 @@ async function main() {
     await server.register(referralRoutes, { prefix: '/api/referrals' });
     await server.register(auditRoutes, { prefix: '/api/audit-logs' });
 
-    // 7. Start Listening
+    // 5. Start Listening immediately so Render health-check passes in <1s
     await server.listen({ port: PORT, host: HOST });
     console.log(`\n================================================================`);
     console.log(`🚀 INFINIX FASTIFY SERVER RUNNING ON: http://${HOST}:${PORT}`);
     console.log(`🌐 Health endpoint: http://${HOST}:${PORT}/api/health`);
     console.log(`📡 Ready for web admin interface & mobile client app connections`);
     console.log(`================================================================\n`);
+
+    // 6. Connect to MongoDB Atlas and auto-seed in background
+    connectDB()
+      .then(() => seedDatabase(false))
+      .catch((err) => console.error('[Database] Background connection error:', err));
   } catch (error) {
     server.log.error(error);
     process.exit(1);

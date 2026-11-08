@@ -3,21 +3,27 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGODB_URI;
+const DEFAULT_MONGODB_URI =
+  'mongodb+srv://infinixinvestmentsinfo_db_user:INFINIX777DB@cluster0.oimwjjg.mongodb.net/infinix?retryWrites=true&w=majority';
+
+const MONGODB_URI = process.env.MONGODB_URI || DEFAULT_MONGODB_URI;
+
+export function isDbConnected(): boolean {
+  return mongoose.connection.readyState === 1;
+}
 
 export async function connectDB(): Promise<void> {
-  if (!MONGODB_URI) {
-    throw new Error('FATAL: MONGODB_URI is not defined in environment variables. Please configure your .env file.');
-  }
-
   try {
     const maskedUri = MONGODB_URI.replace(/:([^:@]+)@/, ':****@');
     console.log(`[Database] Connecting to MongoDB Atlas (${maskedUri})...`);
 
     mongoose.set('strictQuery', false);
+    // Never buffer commands if connection drops or fails
+    mongoose.set('bufferCommands', false);
 
     await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 8000,
+      connectTimeoutMS: 10000,
     });
 
     console.log(`[Database] ✅ Successfully connected to MongoDB Atlas database: "${mongoose.connection.name}"`);
@@ -31,4 +37,5 @@ export async function connectDB(): Promise<void> {
     }
   }
 }
+
 

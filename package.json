@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
+    "postinstall": "tsc",
     "start": "node dist/server.js",
     "seed": "tsx src/seed.ts",
     "test": "echo \"Error: no test specified\" && exit 1"

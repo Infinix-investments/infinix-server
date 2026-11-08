@@ -26,6 +26,11 @@ const MONGODB_URI = process.env.MONGODB_URI || '';
 
 export async function seedDatabase(force = false) {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      console.warn('[Seeder] Database not connected. Skipping automatic seed.');
+      return;
+    }
+
     console.log('[Seeder] Checking database for initial data...');
 
     const clientCount = await Client.countDocuments();
