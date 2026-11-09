@@ -35,9 +35,12 @@ async function main() {
       credentials: true,
     });
 
-    // 2. Register JWT
+    // 2. Register JWT with 30 days default expiration
     await server.register(jwt, {
       secret: JWT_SECRET,
+      sign: {
+        expiresIn: '30d',
+      },
     });
 
     // 3. Health Check & Root Endpoints (instant response for Render & apps)
