@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import bcrypt from 'bcryptjs';
+import mongoose from 'mongoose';
 import { Client } from '../models/Client.js';
 import { Plan } from '../models/Plan.js';
 import { Investment } from '../models/Investment.js';
@@ -201,20 +202,31 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
   // POST /api/clients/:id/assign-plan (Payment verified & plan started by Admin)
   fastify.post('/:id/assign-plan', async (request, reply) => {
     const { id } = request.params as any;
-    const { planId, capitalAmount, startDate, paymentReference, adminName } = request.body as any;
+    const { planId, planName: passedPlanName, capitalAmount, startDate, paymentReference, adminName } = request.body as any;
 
     const client = (await Client.findOne({ clientId: id })) || (await Client.findById(id));
     if (!client) {
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
 
-    const plan = (await Plan.findOne({ planId })) || (await Plan.findOne({ isDefault: true })) || (await Plan.findOne());
-    const planName = plan ? plan.planName : '14-Month 15% Return Accelerator (0.5% Daily)';
+    let plan = null;
+    if (planId) {
+      plan = (await Plan.findOne({ planId })) || (await Plan.findOne({ _id: mongoose.isValidObjectId(planId) ? planId : null }));
+    }
+    if (!plan && passedPlanName) {
+      plan = await Plan.findOne({ planName: passedPlanName });
+    }
+    if (!plan && !passedPlanName && !planId) {
+      plan = (await Plan.findOne({ isDefault: true })) || (await Plan.findOne());
+    }
+
+    const resolvedPlanId = plan ? plan.planId : (planId || 'plan-14m-15pct');
+    const resolvedPlanName = plan ? plan.planName : (passedPlanName || '14-Month 15% Return Accelerator (0.5% Daily)');
     const amount = Number(capitalAmount) || 100000;
     const activeStartDate = startDate || new Date().toISOString().split('T')[0];
 
-    client.assignedPlanId = plan ? plan.planId : 'plan-14m-15pct';
-    client.assignedPlanName = planName;
+    client.assignedPlanId = resolvedPlanId;
+    client.assignedPlanName = resolvedPlanName;
     client.assignedPlanAmount = amount;
     client.assignedPlanStartDate = activeStartDate;
     client.assignedPlanStatus = 'active';
@@ -231,11 +243,15 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
 
     // Create matching investment record
     const investmentId = `inv-${Date.now().toString().slice(-4)}`;
+    const durationMonths = plan?.durationMonths || 14;
+    const dailyReturnPct = plan?.dailyReturnPct ?? 0.5;
+    const monthlyReturnPct = plan?.monthlyReturnPct ?? 15.0;
+
     await Investment.create({
       investmentId,
       clientId: client.clientId,
-      symbol: 'INF-14M',
-      name: planName,
+      symbol: `INF-${durationMonths}M`,
+      name: resolvedPlanName,
       assetClass: 'private_plan',
       shares: 1,
       investedAmount: amount,
@@ -245,7 +261,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       investmentDate: activeStartDate,
       valuationDate: activeStartDate,
       valuationType: 'manual',
-      notes: `Allocated by wealth administrator ${adminName || 'Admin'}. Payment verified${paymentReference ? ` (Ref: ${paymentReference})` : ''}. 0.5% daily (15% monthly) distribution.`,
+      notes: `Allocated by wealth administrator ${adminName || 'Admin'}. Payment verified${paymentReference ? ` (Ref: ${paymentReference})` : ''}. ${dailyReturnPct}% daily (${monthlyReturnPct}% monthly) distribution.`,
       valuationHistory: [
         {
           id: `vh-${Date.now()}`,
@@ -261,9 +277,9 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       { refereeId: client.clientId },
       {
         status: 'active',
-        planName,
+        planName: resolvedPlanName,
         capitalAmount: amount,
-        monthlyCommissionAmount: Math.round(amount * 0.15 * 0.10),
+        monthlyCommissionAmount: Math.round(amount * (monthlyReturnPct / 100) * 0.10),
       }
     );
 
@@ -274,12 +290,12 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       adminName: adminName || 'Administrator',
       action: 'Plan Activated (Payment Verified)',
       category: 'plan_assignment',
-      details: `Payment verified & activated ${planName} (${amount.toLocaleString('en-US')} USDT) for ${client.firstName} ${client.lastName} (${client.clientId}). Start Date: ${activeStartDate}. Ref: ${paymentReference || 'Direct USDT Escrow Verified'}.`,
+      details: `Payment verified & activated ${resolvedPlanName} (${amount.toLocaleString('en-US')} USDT) for ${client.firstName} ${client.lastName} (${client.clientId}). Start Date: ${activeStartDate}. Ref: ${paymentReference || 'Direct USDT Escrow Verified'}.`,
     });
 
     return reply.send({
       success: true,
-      message: `Payment verified. "${planName}" successfully activated for ${client.firstName} ${client.lastName}.`,
+      message: `Payment verified. "${resolvedPlanName}" successfully activated for ${client.firstName} ${client.lastName}.`,
       data: client,
     });
   });
