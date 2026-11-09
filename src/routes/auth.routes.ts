@@ -456,6 +456,19 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     }
 
     const cleanPhone = phone.trim();
+
+    // Uniqueness check: reject if another account already holds this number
+    const existingWithPhone = await Client.findOne({
+      phone: cleanPhone,
+      _id: { $ne: user._id },
+    });
+    if (existingWithPhone) {
+      return reply.status(409).send({
+        success: false,
+        error: 'This phone number is already linked to another account. Please use a different number.',
+      });
+    }
+
     const phoneOtp = Math.floor(100000 + Math.random() * 900000).toString();
     user.phone = cleanPhone;
     user.phoneOtp = phoneOtp;
@@ -494,6 +507,18 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     const user = await Client.findOne(queryOr.length > 0 ? { $or: queryOr } : { clientId: 'none' });
     if (!user) {
       return reply.status(404).send({ success: false, error: 'User not found.' });
+    }
+
+    // Uniqueness check: reject if another account already holds this number
+    const existingWithPhone = await Client.findOne({
+      phone: cleanPhone,
+      _id: { $ne: user._id },
+    });
+    if (existingWithPhone) {
+      return reply.status(409).send({
+        success: false,
+        error: 'This phone number is already linked to another account. Please use a different number.',
+      });
     }
 
     user.phone = cleanPhone;
@@ -572,6 +597,18 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       return reply.status(400).send({
         success: false,
         error: 'A valid mobile number is required before phone verification can be completed.',
+      });
+    }
+
+    // Uniqueness check: reject if another account already holds this number
+    const existingWithPhone = await Client.findOne({
+      phone: cleanPhone,
+      _id: { $ne: user._id },
+    });
+    if (existingWithPhone) {
+      return reply.status(409).send({
+        success: false,
+        error: 'This phone number is already linked to another account. Please use a different number.',
       });
     }
 
