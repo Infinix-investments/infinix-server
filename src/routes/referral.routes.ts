@@ -39,8 +39,8 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
         );
         if (!alreadyExists) {
           const cap = rc.assignedPlanAmount || 0;
-          const monthlyRoi = Math.round(cap * 0.15);
-          const comm = Math.round(monthlyRoi * 0.10);
+          // Direct Referral Bonus: 5% of total invested capital
+          const directBonus = Math.round(cap * 0.05 * 100) / 100;
           referrals.push({
             referralId: `ref-${rc.clientId}`,
             referrerId: referrerId || '',
@@ -51,12 +51,12 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
             refereeEmail: rc.email,
             refereePhone: rc.phone || '',
             level: 1,
-            planName: rc.assignedPlanName || '14-Month Wealth Accelerator',
+            planName: rc.assignedPlanName || 'Active Investment Plan',
             capitalAmount: cap,
-            commissionRatePct: 10.0,
-            monthlyCommissionAmount: comm,
-            totalEarnedAmount: comm,
-            status: rc.assignedPlanStatus === 'active' ? 'active' : 'pending',
+            commissionRatePct: 5.0,
+            monthlyCommissionAmount: directBonus,
+            totalEarnedAmount: directBonus,
+            status: rc.assignedPlanStatus === 'active' && cap > 0 ? 'active' : 'pending',
             dateJoined: rc.joinedDate,
           } as any);
         }
@@ -122,22 +122,9 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
     const capital = Number(body.capitalAmount) || 0;
     const level = Number(body.level) || 1;
     
-    // Level specific commission percentage of ROI:
-    // Level 1: 10%, Level 2: 5%, Level 3: 3%, Level 4: 2%, Level 5: 1%
-    const levelPercentages: Record<number, number> = {
-      1: 10.0,
-      2: 5.0,
-      3: 3.0,
-      4: 2.0,
-      5: 1.0,
-    };
-    const commissionPct = Number(body.commissionRatePct) || levelPercentages[level] || 5.0;
-    
-    // Referred person's monthly ROI (15% on 14-Month Accelerator plan)
-    const monthlyRoi = Math.round(capital * 0.15);
-    
-    // Level profit = level specific percentage of ROI of their investment
-    const monthlyCommission = Math.round(monthlyRoi * (commissionPct / 100));
+    // Direct Referral Income: 5% of total invested capital
+    const commissionPct = Number(body.commissionRatePct) || 5.0;
+    const directBonus = Math.round(capital * (commissionPct / 100) * 100) / 100;
 
     const referral = await Referral.create({
       referralId,
@@ -149,11 +136,11 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
       refereeEmail: body.refereeEmail || '',
       refereePhone: body.refereePhone || '',
       level: Number(body.level) || 1,
-      planName: body.planName || '14-Month 15% Return Accelerator',
+      planName: body.planName || 'Active Investment Plan',
       capitalAmount: capital,
       commissionRatePct: commissionPct,
-      monthlyCommissionAmount: monthlyCommission,
-      totalEarnedAmount: 0,
+      monthlyCommissionAmount: directBonus,
+      totalEarnedAmount: directBonus,
       status: body.status || (capital > 0 ? 'active' : 'pending_activation'),
       dateJoined: body.dateJoined || new Date().toISOString().split('T')[0],
     });
