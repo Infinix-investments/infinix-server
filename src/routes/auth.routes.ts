@@ -567,10 +567,15 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       }
     }
 
-    if (phone) {
-      user.phone = phone.trim();
+    const cleanPhone = (phone ? phone.trim() : (user.phone || '').trim());
+    if (!cleanPhone || cleanPhone.length < 7) {
+      return reply.status(400).send({
+        success: false,
+        error: 'A valid mobile number is required before phone verification can be completed.',
+      });
     }
 
+    user.phone = cleanPhone;
     user.isPhoneVerified = true;
     user.phoneVerifiedAt = new Date();
     user.phoneOtp = undefined;

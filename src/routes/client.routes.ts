@@ -177,6 +177,13 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
 
+    if (updates.isPhoneVerified) {
+      const effPhone = (updates.phone !== undefined ? updates.phone : client.phone || '').trim();
+      if (effPhone.length < 7) {
+        updates.isPhoneVerified = false;
+      }
+    }
+
     Object.assign(client, updates);
     await client.save();
 
@@ -232,7 +239,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     client.assignedPlanStatus = 'active';
     client.totalAum = amount;
     client.kycStatus = 'verified';
-    client.isPhoneVerified = true;
+    client.isPhoneVerified = Boolean(client.phone && client.phone.trim().length >= 7);
     await client.save();
 
     // Remove any previous private_plan investment before creating the new active one
