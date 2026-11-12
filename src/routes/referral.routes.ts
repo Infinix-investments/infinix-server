@@ -32,7 +32,13 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
 
     // Also include any clients who registered with referredByCode matching targetCode
     if (targetCode) {
-      const registeredReferees = await Client.find({ referredByCode: targetCode });
+      const cleanNorm = targetCode.trim().toUpperCase().replace(/^INF-?/, '');
+      const registeredReferees = await Client.find({
+        $or: [
+          { referredByCode: targetCode },
+          { referredByCode: new RegExp(`^(INF-?)?${cleanNorm}$`, 'i') },
+        ],
+      });
       for (const rc of registeredReferees) {
         const alreadyExists = referrals.some(
           (r) => r.refereeId === rc.clientId || r.refereeEmail.toLowerCase() === rc.email.toLowerCase()
