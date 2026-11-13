@@ -284,16 +284,30 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       client.assignedPlanAmount > 0 &&
       client.assignedPlanStatus === 'active'
     ) {
+      let prevPlan = null;
+      if (client.assignedPlanId) {
+        prevPlan = (await Plan.findOne({ planId: client.assignedPlanId })) ||
+                   (await Plan.findOne({ _id: mongoose.isValidObjectId(client.assignedPlanId) ? client.assignedPlanId : null }));
+      }
+      if (!prevPlan && client.assignedPlanName) {
+        prevPlan = await Plan.findOne({ planName: client.assignedPlanName });
+      }
+
+      const prevDuration = prevPlan?.durationMonths || 14;
+      const prevDaily = prevPlan?.dailyReturnPct ?? 0.5;
+      const prevMonthly = prevPlan?.monthlyReturnPct ?? 15.0;
+      const prevGross = prevPlan?.grossTotalReturnPct ?? (prevMonthly * prevDuration);
+
       client.activePlans.push({
         planInstanceId: `plan-initial-${client.clientId}`,
         planId: client.assignedPlanId,
-        planName: client.assignedPlanName || 'Primary Plan',
+        planName: client.assignedPlanName || prevPlan?.planName || 'Primary Plan',
         capitalAmount: client.assignedPlanAmount,
         startDate: client.assignedPlanStartDate || new Date().toISOString().split('T')[0],
-        durationMonths: 14,
-        dailyReturnPct: 0.5,
-        monthlyReturnPct: 15.0,
-        grossTotalReturnPct: 210,
+        durationMonths: prevDuration,
+        dailyReturnPct: prevDaily,
+        monthlyReturnPct: prevMonthly,
+        grossTotalReturnPct: prevGross,
         status: 'active',
         paymentReference: 'Initial Plan',
         assignedAt: client.assignedPlanStartDate || new Date().toISOString(),
@@ -374,22 +388,56 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
   // POST /api/clients/:id/revoke-plan (Revoke active investment plan)
   fastify.post('/:id/revoke-plan', async (request, reply) => {
     const { id } = request.params as any;
-    const { adminName, reason } = (request.body as any) || {};
+    const { adminName, reason, planInstanceId } = (request.body as any) || {};
 
     const client = (await Client.findOne({ clientId: id })) || (await Client.findById(id));
     if (!client) {
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
 
+    // Revoke single plan instance if requested
+    if (planInstanceId && client.activePlans && client.activePlans.length > 0) {
+      const revoked = client.activePlans.find((p) => p.planInstanceId === planInstanceId);
+      client.activePlans = client.activePlans.filter((p) => p.planInstanceId !== planInstanceId);
+      const remainingActive = client.activePlans.filter((p) => p.status === 'active');
+      const totalCap = remainingActive.reduce((sum, p) => sum + (Number(p.capitalAmount) || 0), 0);
+
+      client.assignedPlanAmount = totalCap;
+      client.totalAum = totalCap;
+      if (remainingActive.length === 0) {
+        client.assignedPlanId = null;
+        client.assignedPlanName = undefined;
+        client.assignedPlanStartDate = undefined;
+        client.assignedPlanStatus = 'pending_assignment';
+      } else {
+        const earliest = remainingActive.map((p) => p.startDate).sort()[0];
+        client.assignedPlanStartDate = earliest;
+      }
+      await client.save();
+
+      await Investment.deleteMany({
+        clientId: client.clientId,
+        assetClass: 'private_plan',
+        ...(revoked?.planId ? { planId: revoked.planId } : {}),
+      });
+
+      return reply.send({
+        success: true,
+        message: `Plan contract ${revoked?.planName || planInstanceId} revoked successfully.`,
+        data: client,
+      });
+    }
+
     const prevPlanName = client.assignedPlanName || 'Private Wealth Plan';
     const prevAmount = client.assignedPlanAmount || 0;
 
-    // Reset client plan state
+    // Reset all client plan state
     client.assignedPlanId = null;
     client.assignedPlanName = undefined;
     client.assignedPlanAmount = 0;
     client.assignedPlanStartDate = undefined;
     client.assignedPlanStatus = 'pending_assignment';
+    client.activePlans = [];
     client.totalAum = 0;
     client.currentMonthWithdrawn = false;
     client.currentMonthIndex = 1;
