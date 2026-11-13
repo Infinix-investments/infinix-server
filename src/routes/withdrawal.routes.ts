@@ -4,6 +4,7 @@ import { Client } from '../models/Client.js';
 import { Investment } from '../models/Investment.js';
 import { Transaction } from '../models/Transaction.js';
 import { AuditLog } from '../models/AuditLog.js';
+import { Referral } from '../models/Referral.js';
 
 export async function withdrawalRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   // GET /api/withdrawals
@@ -57,13 +58,6 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       status: 'active',
     });
 
-    if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active')) {
-      return reply.status(400).send({
-        success: false,
-        error: 'No active wealth plan assigned to this account.',
-      });
-    }
-
     const now = new Date();
 
     // Calculate total yield accrued across ALL active plans individually
@@ -79,7 +73,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         totalAccruedYield += planAccrued;
       }
       totalAccruedYield = Math.round(totalAccruedYield * 100) / 100;
-    } else {
+    } else if (client.assignedPlanAmount && client.assignedPlanStatus === 'active') {
       const startDate = client.assignedPlanStartDate
         ? new Date(client.assignedPlanStartDate)
         : new Date(client.joinedDate || Date.now());
@@ -102,13 +96,64 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     }
     const diffDays = Math.max(0, Math.floor((now.getTime() - earliestStartDate.getTime()) / (1000 * 60 * 60 * 24)));
 
-    // Sum existing non-rejected withdrawals
-    const existingWds = await Withdrawal.find({
+    // Calculate referral earnings (5% of each active referee's invested capital)
+    let referralEarnings = 0;
+    if (client.referralCode) {
+      const referralRecords = await Referral.find({
+        $or: [{ referrerId: client.clientId }, { referrerCode: client.referralCode }],
+        status: 'active',
+      });
+      referralEarnings = referralRecords.reduce((sum, r) => {
+        const earned = Number(r.totalEarnedAmount) || Number(r.monthlyCommissionAmount) || Math.round(Number(r.capitalAmount || 0) * 0.05 * 100) / 100;
+        return sum + earned;
+      }, 0);
+
+      // Also check for clients who registered with this referral code but don't have a Referral doc
+      const refereeClientIds = new Set(referralRecords.map((r) => r.refereeId));
+      const cleanNorm = client.referralCode.trim().toUpperCase().replace(/^INF-?/, '');
+      const registeredReferees = await Client.find({
+        $or: [
+          { referredByCode: client.referralCode },
+          { referredByCode: new RegExp(`^(INF-?)?${cleanNorm}$`, 'i') },
+        ],
+        assignedPlanStatus: 'active',
+      });
+      for (const rc of registeredReferees) {
+        if (!refereeClientIds.has(rc.clientId)) {
+          const cap = Number(rc.assignedPlanAmount) || 0;
+          if (cap > 0) {
+            referralEarnings += Math.round(cap * 0.05 * 100) / 100;
+          }
+        }
+      }
+    }
+
+    if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') && referralEarnings <= 0) {
+      return reply.status(400).send({
+        success: false,
+        error: 'No active wealth plan or withdrawable earnings found for this account.',
+      });
+    }
+
+    // Check if client already has a withdrawal pending Admin approval/settlement
+    const pendingWd = await Withdrawal.findOne({
       clientId: client.clientId,
-      status: { $in: ['pending_approval', 'disbursed'] },
+      status: 'pending_approval',
     });
-    const totalWithdrawnGross = existingWds.reduce((sum, w) => sum + (w.grossAmount || w.amount), 0);
-    const availableToWithdraw = Math.max(0, Math.round((totalAccruedYield - totalWithdrawnGross) * 100) / 100);
+    if (pendingWd) {
+      return reply.status(400).send({
+        success: false,
+        error: `You already have a withdrawal request of ${(pendingWd.grossAmount || pendingWd.amount).toLocaleString()} USDT pending Admin settlement.`,
+      });
+    }
+
+    // Sum existing settled (disbursed) withdrawals — pending withdrawals DO NOT deduct until settled by Admin
+    const settledWds = await Withdrawal.find({
+      clientId: client.clientId,
+      status: 'disbursed',
+    });
+    const totalWithdrawnGross = settledWds.reduce((sum, w) => sum + (w.grossAmount || w.amount), 0);
+    const availableToWithdraw = Math.max(0, Math.round((totalAccruedYield + referralEarnings - totalWithdrawnGross) * 100) / 100);
 
     // 10-Day Mandatory Gap Rule
     const latestWd = await Withdrawal.findOne({
