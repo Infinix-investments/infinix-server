@@ -22,6 +22,12 @@ export interface IInvestment extends Document {
   investmentDate?: string;
   valuationDate: string;
   valuationType: 'live_market' | 'manual';
+  planId?: string;
+  planName?: string;
+  durationMonths?: number;
+  dailyReturnPct?: number;
+  monthlyReturnPct?: number;
+  status?: 'active' | 'matured' | 'cancelled';
   notes?: string;
   valuationHistory: IValuationRecord[];
   createdAt: Date;
@@ -67,6 +73,12 @@ const InvestmentSchema: Schema = new Schema(
     investmentDate: { type: String },
     valuationDate: { type: String, required: true },
     valuationType: { type: String, enum: ['live_market', 'manual'], default: 'manual' },
+    planId: { type: String },
+    planName: { type: String },
+    durationMonths: { type: Number },
+    dailyReturnPct: { type: Number },
+    monthlyReturnPct: { type: Number },
+    status: { type: String, enum: ['active', 'matured', 'cancelled'], default: 'active' },
     notes: { type: String },
     valuationHistory: [ValuationRecordSchema],
   },

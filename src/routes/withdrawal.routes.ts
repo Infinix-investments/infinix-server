@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { Withdrawal } from '../models/Withdrawal.js';
 import { Client } from '../models/Client.js';
+import { Investment } from '../models/Investment.js';
 import { Transaction } from '../models/Transaction.js';
 import { AuditLog } from '../models/AuditLog.js';
 
@@ -49,24 +50,57 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       return reply.status(404).send({ success: false, error: 'Client not found.' });
     }
 
-    if (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') {
+    // Find all active plans/investments for this client
+    const activeInvestments = await Investment.find({
+      clientId: client.clientId,
+      assetClass: 'private_plan',
+      status: 'active',
+    });
+
+    if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active')) {
       return reply.status(400).send({
         success: false,
         error: 'No active wealth plan assigned to this account.',
       });
     }
 
-    const startDate = client.assignedPlanStartDate
-      ? new Date(client.assignedPlanStartDate)
-      : new Date(client.joinedDate || Date.now());
     const now = new Date();
-    const diffDays = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
 
-    // Calculate total yield accrued till date (0.5% daily, max 14 months = 420 days)
-    const maxDays = 14 * 30;
-    const effectiveAccruedDays = Math.min(maxDays, diffDays);
-    const dailyProfitAmount = client.assignedPlanAmount * 0.005; // 0.5% per day
-    const totalAccruedYield = Math.round(dailyProfitAmount * effectiveAccruedDays * 100) / 100;
+    // Calculate total yield accrued across ALL active plans individually
+    let totalAccruedYield = 0;
+    if (activeInvestments.length > 0) {
+      for (const inv of activeInvestments) {
+        const invStart = inv.investmentDate ? new Date(inv.investmentDate) : (client.assignedPlanStartDate ? new Date(client.assignedPlanStartDate) : new Date(inv.createdAt));
+        const pDays = Math.max(0, Math.floor((now.getTime() - invStart.getTime()) / (1000 * 60 * 60 * 24)));
+        const maxDays = (inv.durationMonths || 14) * 30;
+        const effectiveDays = Math.min(maxDays, pDays);
+        const rate = (inv.dailyReturnPct || 0.5) / 100;
+        const planAccrued = (inv.investedAmount || 0) * rate * effectiveDays;
+        totalAccruedYield += planAccrued;
+      }
+      totalAccruedYield = Math.round(totalAccruedYield * 100) / 100;
+    } else {
+      const startDate = client.assignedPlanStartDate
+        ? new Date(client.assignedPlanStartDate)
+        : new Date(client.joinedDate || Date.now());
+      const pDays = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
+      const maxDays = 14 * 30;
+      const effectiveAccruedDays = Math.min(maxDays, pDays);
+      const dailyProfitAmount = (client.assignedPlanAmount || 0) * 0.005;
+      totalAccruedYield = Math.round(dailyProfitAmount * effectiveAccruedDays * 100) / 100;
+    }
+
+    // Earliest plan start date for initial 10-day unlock rule & cycle indexing
+    let earliestStartDate = client.assignedPlanStartDate ? new Date(client.assignedPlanStartDate) : new Date(client.joinedDate || Date.now());
+    if (activeInvestments.length > 0) {
+      const dates = activeInvestments
+        .map((i: any) => i.investmentDate ? new Date(i.investmentDate).getTime() : 0)
+        .filter((t: number) => t > 0);
+      if (dates.length > 0) {
+        earliestStartDate = new Date(Math.min(...dates));
+      }
+    }
+    const diffDays = Math.max(0, Math.floor((now.getTime() - earliestStartDate.getTime()) / (1000 * 60 * 60 * 24)));
 
     // Sum existing non-rejected withdrawals
     const existingWds = await Withdrawal.find({
@@ -93,7 +127,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         });
       }
     } else {
-      // First withdrawal unlocks 10 days after plan inception
+      // First withdrawal unlocks 10 days after earliest plan inception
       if (diffDays < 10) {
         const remaining = 10 - diffDays;
         return reply.status(400).send({

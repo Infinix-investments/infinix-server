@@ -232,24 +232,8 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     const amount = Number(capitalAmount) || 100000;
     const activeStartDate = startDate || new Date().toISOString().split('T')[0];
 
-    client.assignedPlanId = resolvedPlanId;
-    client.assignedPlanName = resolvedPlanName;
-    client.assignedPlanAmount = amount;
-    client.assignedPlanStartDate = activeStartDate;
-    client.assignedPlanStatus = 'active';
-    client.totalAum = amount;
-    client.kycStatus = 'verified';
-    client.isPhoneVerified = Boolean(client.phone && client.phone.trim().length >= 7);
-    await client.save();
-
-    // Remove any previous private_plan investment before creating the new active one
-    await Investment.deleteMany({
-      clientId: client.clientId,
-      assetClass: 'private_plan',
-    });
-
-    // Create matching investment record
-    const investmentId = `inv-${Date.now().toString().slice(-4)}`;
+    // Create unique investment record for this newly purchased / allocated plan
+    const investmentId = `inv-${Date.now().toString().slice(-6)}`;
     const durationMonths = plan?.durationMonths || 14;
     const dailyReturnPct = plan?.dailyReturnPct ?? 0.5;
     const monthlyReturnPct = plan?.monthlyReturnPct ?? 15.0;
@@ -268,6 +252,12 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       investmentDate: activeStartDate,
       valuationDate: activeStartDate,
       valuationType: 'manual',
+      planId: resolvedPlanId,
+      planName: resolvedPlanName,
+      durationMonths,
+      dailyReturnPct,
+      monthlyReturnPct,
+      status: 'active',
       notes: `Allocated by wealth administrator ${adminName || 'Admin'}. Payment verified${paymentReference ? ` (Ref: ${paymentReference})` : ''}. ${dailyReturnPct}% daily (${monthlyReturnPct}% monthly) distribution.`,
       valuationHistory: [
         {
@@ -279,14 +269,33 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       ],
     });
 
-    // Update referrals where this client is the referee to active
+    // Compute cumulative active plans capital for this client
+    const allActiveInvestments = await Investment.find({
+      clientId: client.clientId,
+      assetClass: 'private_plan',
+      status: 'active',
+    });
+    const totalActivePlanCapital = allActiveInvestments.reduce((sum, inv) => sum + (inv.investedAmount || 0), 0);
+
+    // Update client profile fields
+    client.assignedPlanId = resolvedPlanId;
+    client.assignedPlanName = resolvedPlanName;
+    client.assignedPlanAmount = totalActivePlanCapital;
+    client.assignedPlanStartDate = activeStartDate;
+    client.assignedPlanStatus = 'active';
+    client.totalAum = totalActivePlanCapital;
+    client.kycStatus = 'verified';
+    client.isPhoneVerified = Boolean(client.phone && client.phone.trim().length >= 7);
+    await client.save();
+
+    // Update referrals where this client is the referee with their cumulative invested capital
     await Referral.updateMany(
       { refereeId: client.clientId },
       {
         status: 'active',
         planName: resolvedPlanName,
-        capitalAmount: amount,
-        monthlyCommissionAmount: Math.round(amount * (monthlyReturnPct / 100) * 0.10),
+        capitalAmount: totalActivePlanCapital,
+        monthlyCommissionAmount: Math.round(totalActivePlanCapital * (monthlyReturnPct / 100) * 0.10),
       }
     );
 
