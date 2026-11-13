@@ -1,5 +1,20 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export interface IClientPlan {
+  planInstanceId: string;
+  planId: string;
+  planName: string;
+  capitalAmount: number;
+  startDate: string;
+  durationMonths: number;
+  dailyReturnPct: number;
+  monthlyReturnPct: number;
+  grossTotalReturnPct?: number;
+  status: 'active' | 'matured' | 'cancelled';
+  paymentReference?: string;
+  assignedAt?: string;
+}
+
 export interface IClient extends Document {
   clientId: string;
   firstName: string;
@@ -25,6 +40,7 @@ export interface IClient extends Document {
   assignedPlanAmount?: number;
   assignedPlanStartDate?: string;
   assignedPlanStatus: 'active' | 'pending_assignment' | 'matured' | 'cancelled';
+  activePlans: IClientPlan[];
   currentMonthIndex: number;
   currentMonthWithdrawn: boolean;
   lastWithdrawalDate?: string;
@@ -85,6 +101,25 @@ const ClientSchema: Schema = new Schema(
       type: String,
       enum: ['active', 'pending_assignment', 'matured', 'cancelled'],
       default: 'pending_assignment',
+    },
+    activePlans: {
+      type: [
+        {
+          planInstanceId: { type: String, required: true },
+          planId: { type: String, required: true },
+          planName: { type: String, required: true },
+          capitalAmount: { type: Number, required: true },
+          startDate: { type: String, required: true },
+          durationMonths: { type: Number, default: 14 },
+          dailyReturnPct: { type: Number, default: 0.5 },
+          monthlyReturnPct: { type: Number, default: 15.0 },
+          grossTotalReturnPct: { type: Number, default: 210 },
+          status: { type: String, enum: ['active', 'matured', 'cancelled'], default: 'active' },
+          paymentReference: { type: String, default: '' },
+          assignedAt: { type: String },
+        },
+      ],
+      default: [],
     },
     currentMonthIndex: { type: Number, default: 1 },
     currentMonthWithdrawn: { type: Boolean, default: false },

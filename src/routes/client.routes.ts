@@ -65,6 +65,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         referredByCode: c.referredByCode,
         joinedDate: c.joinedDate,
         notes: c.notes,
+        activePlans: c.activePlans || [],
       })),
     });
   });
@@ -106,6 +107,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         referredByCode: client.referredByCode,
         joinedDate: client.joinedDate,
         notes: client.notes,
+        activePlans: client.activePlans || [],
       },
     });
   });
@@ -269,19 +271,72 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       ],
     });
 
-    // Compute cumulative active plans capital for this client
-    const allActiveInvestments = await Investment.find({
-      clientId: client.clientId,
-      assetClass: 'private_plan',
-      status: 'active',
-    });
-    const totalActivePlanCapital = allActiveInvestments.reduce((sum, inv) => sum + (inv.investedAmount || 0), 0);
+    // Initialize or migrate activePlans array on client document
+    if (!client.activePlans) {
+      client.activePlans = [];
+    }
+
+    // If client had an existing plan that was not yet in activePlans, preserve it!
+    if (
+      client.activePlans.length === 0 &&
+      client.assignedPlanId &&
+      client.assignedPlanAmount &&
+      client.assignedPlanAmount > 0 &&
+      client.assignedPlanStatus === 'active'
+    ) {
+      client.activePlans.push({
+        planInstanceId: `plan-initial-${client.clientId}`,
+        planId: client.assignedPlanId,
+        planName: client.assignedPlanName || 'Primary Plan',
+        capitalAmount: client.assignedPlanAmount,
+        startDate: client.assignedPlanStartDate || new Date().toISOString().split('T')[0],
+        durationMonths: 14,
+        dailyReturnPct: 0.5,
+        monthlyReturnPct: 15.0,
+        grossTotalReturnPct: 210,
+        status: 'active',
+        paymentReference: 'Initial Plan',
+        assignedAt: client.assignedPlanStartDate || new Date().toISOString(),
+      });
+    }
+
+    const planInstanceId = `plan-${Date.now().toString().slice(-6)}`;
+    const newPlanInstance = {
+      planInstanceId,
+      planId: resolvedPlanId,
+      planName: resolvedPlanName,
+      capitalAmount: amount,
+      startDate: activeStartDate,
+      durationMonths,
+      dailyReturnPct,
+      monthlyReturnPct,
+      grossTotalReturnPct: plan?.grossTotalReturnPct || (monthlyReturnPct * durationMonths),
+      status: 'active' as const,
+      paymentReference: paymentReference || '',
+      assignedAt: new Date().toISOString(),
+    };
+
+    client.activePlans.push(newPlanInstance);
+
+    // Compute cumulative active plans capital
+    const totalActivePlanCapital = client.activePlans
+      .filter((p) => p.status === 'active')
+      .reduce((sum, p) => sum + (Number(p.capitalAmount) || 0), 0);
+
+    // Earliest start date across active plans
+    const validDates = client.activePlans
+      .filter((p) => p.status === 'active' && p.startDate)
+      .map((p) => new Date(p.startDate).getTime())
+      .filter((t) => !isNaN(t));
+    const earliestStartDate = validDates.length > 0
+      ? new Date(Math.min(...validDates)).toISOString().split('T')[0]
+      : activeStartDate;
 
     // Update client profile fields
     client.assignedPlanId = resolvedPlanId;
     client.assignedPlanName = resolvedPlanName;
     client.assignedPlanAmount = totalActivePlanCapital;
-    client.assignedPlanStartDate = activeStartDate;
+    client.assignedPlanStartDate = earliestStartDate;
     client.assignedPlanStatus = 'active';
     client.totalAum = totalActivePlanCapital;
     client.kycStatus = 'verified';
