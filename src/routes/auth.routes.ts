@@ -4,6 +4,7 @@ import { Client } from '../models/Client.js';
 import { Referral } from '../models/Referral.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { sendOtpEmail, sendPasswordResetEmail } from '../services/email.service.js';
+import { resolveClientActivePlans } from './client.routes.js';
 
 export async function authRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   // POST /api/auth/login
@@ -90,7 +91,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
         assignedPlanAmount: user.assignedPlanAmount,
         assignedPlanStatus: user.assignedPlanStatus || 'pending_assignment',
         assignedPlanStartDate: user.assignedPlanStartDate,
-        activePlans: user.activePlans || [],
+        activePlans: resolveClientActivePlans(user),
         currentMonthIndex: user.currentMonthIndex || 1,
         currentMonthWithdrawn: !!user.currentMonthWithdrawn,
         referralCode: user.referralCode,
@@ -428,7 +429,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
         assignedPlanAmount: user.assignedPlanAmount,
         assignedPlanStatus: user.assignedPlanStatus || 'pending_assignment',
         assignedPlanStartDate: user.assignedPlanStartDate,
-        activePlans: user.activePlans || [],
+        activePlans: resolveClientActivePlans(user),
         currentMonthIndex: user.currentMonthIndex || 1,
         currentMonthWithdrawn: !!user.currentMonthWithdrawn,
         referralCode: user.referralCode,
@@ -649,7 +650,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
         assignedPlanAmount: user.assignedPlanAmount,
         assignedPlanStatus: user.assignedPlanStatus || 'pending_assignment',
         assignedPlanStartDate: user.assignedPlanStartDate,
-        activePlans: user.activePlans || [],
+        activePlans: resolveClientActivePlans(user),
         currentMonthIndex: user.currentMonthIndex || 1,
         currentMonthWithdrawn: !!user.currentMonthWithdrawn,
         referralCode: user.referralCode,

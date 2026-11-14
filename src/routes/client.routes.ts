@@ -7,7 +7,7 @@ import { Investment } from '../models/Investment.js';
 import { Referral } from '../models/Referral.js';
 import { AuditLog } from '../models/AuditLog.js';
 
-function resolveClientActivePlans(c: any): any[] {
+export function resolveClientActivePlans(c: any): any[] {
   if (Array.isArray(c.activePlans) && c.activePlans.length > 0) {
     return c.activePlans;
   }
@@ -265,15 +265,111 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     const resolvedPlanName = plan ? plan.planName : (passedPlanName || '14-Month 15% Return Accelerator (0.5% Daily)');
     const amount = Number(capitalAmount) || 100000;
     const activeStartDate = startDate || new Date().toISOString().split('T')[0];
-
-    // Create unique investment record for this newly purchased / allocated plan
-    const investmentId = `inv-${Date.now().toString().slice(-6)}`;
     const durationMonths = plan?.durationMonths || 14;
     const dailyReturnPct = plan?.dailyReturnPct ?? 0.5;
     const monthlyReturnPct = plan?.monthlyReturnPct ?? 15.0;
 
+    // Initialize or migrate activePlans array on client document
+    if (!client.activePlans || !Array.isArray(client.activePlans)) {
+      client.activePlans = [];
+    }
+
+    const hasExistingCapital = (Number(client.assignedPlanAmount) || 0) > 0;
+    // If client had an existing plan that was not yet in activePlans, preserve it!
+    if (client.activePlans.length === 0 && hasExistingCapital) {
+      let prevPlan = null;
+      if (client.assignedPlanId) {
+        prevPlan = (await Plan.findOne({ planId: client.assignedPlanId })) ||
+                   (await Plan.findOne({ _id: mongoose.isValidObjectId(client.assignedPlanId) ? client.assignedPlanId : null }));
+      }
+      if (!prevPlan && client.assignedPlanName) {
+        prevPlan = await Plan.findOne({ planName: client.assignedPlanName });
+      }
+
+      const is20M = (client.assignedPlanName || '').toLowerCase().includes('20') || (client.assignedPlanId || '').includes('7441');
+      const prevDuration = prevPlan?.durationMonths || (is20M ? 20 : 14);
+      const prevDaily = prevPlan?.dailyReturnPct ?? (is20M ? 0.33 : 0.5);
+      const prevMonthly = prevPlan?.monthlyReturnPct ?? (is20M ? 10.0 : 15.0);
+      const prevGross = prevPlan?.grossTotalReturnPct ?? (prevMonthly * prevDuration);
+      const prevStartDate = client.assignedPlanStartDate || new Date().toISOString().split('T')[0];
+      const prevInstanceId = `plan-initial-${client.clientId}`;
+
+      client.activePlans.push({
+        planInstanceId: prevInstanceId,
+        planId: client.assignedPlanId || (is20M ? 'plan-7441' : 'plan-14m-15pct'),
+        planName: client.assignedPlanName || prevPlan?.planName || (is20M ? 'INFINIX 20 months investment plan' : 'Primary Plan'),
+        capitalAmount: Number(client.assignedPlanAmount) || 0,
+        startDate: prevStartDate,
+        durationMonths: prevDuration,
+        dailyReturnPct: prevDaily,
+        monthlyReturnPct: prevMonthly,
+        grossTotalReturnPct: prevGross,
+        status: 'active',
+        paymentReference: 'Initial Mandate',
+        assignedAt: client.assignedPlanStartDate || new Date().toISOString(),
+      });
+
+      // Ensure Investment document exists for the initial plan as well
+      const existingInitialInv = await Investment.findOne({
+        clientId: client.clientId,
+        assetClass: 'private_plan',
+        status: 'active',
+      });
+      if (!existingInitialInv) {
+        await Investment.create({
+          investmentId: `inv-${prevInstanceId}`,
+          clientId: client.clientId,
+          symbol: `INF-${prevDuration}M`,
+          name: client.assignedPlanName || prevPlan?.planName || (is20M ? 'INFINIX 20 months investment plan' : 'Primary Plan'),
+          assetClass: 'private_plan',
+          shares: 1,
+          investedAmount: Number(client.assignedPlanAmount) || 0,
+          currentValue: Number(client.assignedPlanAmount) || 0,
+          currentPrice: Number(client.assignedPlanAmount) || 0,
+          currency: 'USDT',
+          investmentDate: prevStartDate,
+          valuationDate: prevStartDate,
+          valuationType: 'manual',
+          planId: client.assignedPlanId || (is20M ? 'plan-7441' : 'plan-14m-15pct'),
+          planName: client.assignedPlanName || prevPlan?.planName || (is20M ? 'INFINIX 20 months investment plan' : 'Primary Plan'),
+          durationMonths: prevDuration,
+          dailyReturnPct: prevDaily,
+          monthlyReturnPct: prevMonthly,
+          status: 'active',
+          notes: 'Migrated initial contractual plan',
+          valuationHistory: [
+            {
+              id: `vh-${Date.now()}`,
+              date: prevStartDate,
+              value: Number(client.assignedPlanAmount) || 0,
+              notes: 'Initial contractual plan allocation',
+            },
+          ],
+        });
+      }
+    }
+
+    const planInstanceId = `plan-${Date.now().toString().slice(-6)}`;
+    const newPlanInstance = {
+      planInstanceId,
+      planId: resolvedPlanId,
+      planName: resolvedPlanName,
+      capitalAmount: amount,
+      startDate: activeStartDate,
+      durationMonths,
+      dailyReturnPct,
+      monthlyReturnPct,
+      grossTotalReturnPct: plan?.grossTotalReturnPct || (monthlyReturnPct * durationMonths),
+      status: 'active' as const,
+      paymentReference: paymentReference || '',
+      assignedAt: new Date().toISOString(),
+    };
+
+    client.activePlans.push(newPlanInstance);
+
+    // Create unique investment record for this newly purchased / allocated plan
     await Investment.create({
-      investmentId,
+      investmentId: `inv-${planInstanceId}`,
       clientId: client.clientId,
       symbol: `INF-${durationMonths}M`,
       name: resolvedPlanName,
@@ -298,67 +394,10 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
           id: `vh-${Date.now()}`,
           date: activeStartDate,
           value: amount,
-          notes: 'Initial contractual plan allocation following payment verification',
+          notes: 'Contractual plan allocation following payment verification',
         },
       ],
     });
-
-    // Initialize or migrate activePlans array on client document
-    if (!client.activePlans || !Array.isArray(client.activePlans)) {
-      client.activePlans = [];
-    }
-
-    const hasExistingCapital = (Number(client.assignedPlanAmount) || 0) > 0;
-    // If client had an existing plan that was not yet in activePlans, preserve it!
-    if (client.activePlans.length === 0 && hasExistingCapital) {
-      let prevPlan = null;
-      if (client.assignedPlanId) {
-        prevPlan = (await Plan.findOne({ planId: client.assignedPlanId })) ||
-                   (await Plan.findOne({ _id: mongoose.isValidObjectId(client.assignedPlanId) ? client.assignedPlanId : null }));
-      }
-      if (!prevPlan && client.assignedPlanName) {
-        prevPlan = await Plan.findOne({ planName: client.assignedPlanName });
-      }
-
-      const is20M = (client.assignedPlanName || '').toLowerCase().includes('20') || (client.assignedPlanId || '').includes('7441');
-      const prevDuration = prevPlan?.durationMonths || (is20M ? 20 : 14);
-      const prevDaily = prevPlan?.dailyReturnPct ?? (is20M ? 0.33 : 0.5);
-      const prevMonthly = prevPlan?.monthlyReturnPct ?? (is20M ? 10.0 : 15.0);
-      const prevGross = prevPlan?.grossTotalReturnPct ?? (prevMonthly * prevDuration);
-
-      client.activePlans.push({
-        planInstanceId: `plan-initial-${client.clientId}`,
-        planId: client.assignedPlanId || (is20M ? 'plan-7441' : 'plan-14m-15pct'),
-        planName: client.assignedPlanName || prevPlan?.planName || (is20M ? 'INFINIX 20 months investment plan' : 'Primary Plan'),
-        capitalAmount: Number(client.assignedPlanAmount) || 0,
-        startDate: client.assignedPlanStartDate || new Date().toISOString().split('T')[0],
-        durationMonths: prevDuration,
-        dailyReturnPct: prevDaily,
-        monthlyReturnPct: prevMonthly,
-        grossTotalReturnPct: prevGross,
-        status: 'active',
-        paymentReference: 'Initial Mandate',
-        assignedAt: client.assignedPlanStartDate || new Date().toISOString(),
-      });
-    }
-
-    const planInstanceId = `plan-${Date.now().toString().slice(-6)}`;
-    const newPlanInstance = {
-      planInstanceId,
-      planId: resolvedPlanId,
-      planName: resolvedPlanName,
-      capitalAmount: amount,
-      startDate: activeStartDate,
-      durationMonths,
-      dailyReturnPct,
-      monthlyReturnPct,
-      grossTotalReturnPct: plan?.grossTotalReturnPct || (monthlyReturnPct * durationMonths),
-      status: 'active' as const,
-      paymentReference: paymentReference || '',
-      assignedAt: new Date().toISOString(),
-    };
-
-    client.activePlans.push(newPlanInstance);
 
     // Compute cumulative active plans capital
     const totalActivePlanCapital = client.activePlans
@@ -430,7 +469,13 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     // Revoke single plan instance if requested
     if (planInstanceId && client.activePlans && client.activePlans.length > 0) {
       const revoked = client.activePlans.find((p) => p.planInstanceId === planInstanceId);
+      if (!revoked) {
+        return reply.status(404).send({ success: false, error: 'Contract plan instance not found on client.' });
+      }
+
       client.activePlans = client.activePlans.filter((p) => p.planInstanceId !== planInstanceId);
+      client.markModified('activePlans');
+
       const remainingActive = client.activePlans.filter((p) => p.status === 'active');
       const totalCap = remainingActive.reduce((sum, p) => sum + (Number(p.capitalAmount) || 0), 0);
 
@@ -442,21 +487,55 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         client.assignedPlanStartDate = undefined;
         client.assignedPlanStatus = 'pending_assignment';
       } else {
-        const earliest = remainingActive.map((p) => p.startDate).sort()[0];
+        const earliest = remainingActive.map((p) => p.startDate).filter(Boolean).sort()[0];
         client.assignedPlanStartDate = earliest;
+        client.assignedPlanId = remainingActive[0].planId;
+        client.assignedPlanName = remainingActive[0].planName;
+        client.assignedPlanStatus = 'active';
       }
       await client.save();
 
-      await Investment.deleteMany({
+      // Delete ONLY the specific investment record for this revoked plan instance
+      const deleted = await Investment.findOneAndDelete({
         clientId: client.clientId,
-        assetClass: 'private_plan',
-        ...(revoked?.planId ? { planId: revoked.planId } : {}),
+        investmentId: `inv-${planInstanceId}`,
+      });
+      if (!deleted) {
+        await Investment.findOneAndDelete({
+          clientId: client.clientId,
+          assetClass: 'private_plan',
+          planId: revoked.planId,
+          investedAmount: revoked.capitalAmount,
+        });
+      }
+
+      // Update referral commissions
+      await Referral.updateMany(
+        { refereeId: client.clientId },
+        {
+          status: totalCap > 0 ? 'active' : 'pending',
+          capitalAmount: totalCap,
+          monthlyCommissionAmount: Math.round(totalCap * ((revoked.monthlyReturnPct || 15) / 100) * 0.10),
+        }
+      );
+
+      // Record in Audit Log
+      await AuditLog.create({
+        auditId: `audit-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        adminName: adminName || 'Chief Wealth Admin (Altaf)',
+        action: 'Single Contract Plan Revoked',
+        category: 'plan_assignment',
+        details: `Revoked contract plan "${revoked.planName}" (${revoked.capitalAmount.toLocaleString('en-US')} USDT, Inception: ${revoked.startDate}) from ${client.firstName} ${client.lastName} (${client.clientId}). Remaining active capital: ${totalCap.toLocaleString('en-US')} USDT across ${remainingActive.length} active contract(s).${reason ? ` Reason: ${reason}` : ''}`,
       });
 
       return reply.send({
         success: true,
-        message: `Plan contract ${revoked?.planName || planInstanceId} revoked successfully.`,
-        data: client,
+        message: `Plan contract "${revoked.planName}" (${revoked.capitalAmount} USDT) revoked successfully. Remaining AUM: ${totalCap} USDT.`,
+        data: {
+          ...client.toObject(),
+          activePlans: resolveClientActivePlans(client),
+        },
       });
     }
 
