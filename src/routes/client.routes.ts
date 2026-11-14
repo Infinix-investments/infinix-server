@@ -7,6 +7,38 @@ import { Investment } from '../models/Investment.js';
 import { Referral } from '../models/Referral.js';
 import { AuditLog } from '../models/AuditLog.js';
 
+function resolveClientActivePlans(c: any): any[] {
+  if (Array.isArray(c.activePlans) && c.activePlans.length > 0) {
+    return c.activePlans;
+  }
+  const cap = Number(c.assignedPlanAmount || 0);
+  if (cap > 0) {
+    const is20M = (c.assignedPlanName || '').toLowerCase().includes('20') || (c.assignedPlanId || '').includes('7441');
+    const duration = is20M ? 20 : 14;
+    const daily = is20M ? 0.33 : 0.5;
+    const monthly = is20M ? 10.0 : 15.0;
+    const gross = is20M ? 200 : 210;
+
+    return [
+      {
+        planInstanceId: `plan-primary-${c.clientId || c.id || 'default'}`,
+        planId: c.assignedPlanId || (is20M ? 'plan-7441' : 'plan-14m-15pct'),
+        planName: c.assignedPlanName || (is20M ? 'INFINIX 20 months investment plan' : '14-Month 15% Return Accelerator'),
+        capitalAmount: cap,
+        startDate: c.assignedPlanStartDate || c.joinedDate || new Date().toISOString().split('T')[0],
+        durationMonths: duration,
+        dailyReturnPct: daily,
+        monthlyReturnPct: monthly,
+        grossTotalReturnPct: gross,
+        status: 'active',
+        paymentReference: 'Initial Mandate Escrow',
+        assignedAt: c.assignedPlanStartDate || c.joinedDate || new Date().toISOString(),
+      },
+    ];
+  }
+  return [];
+}
+
 export async function clientRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   // GET /api/clients
   fastify.get('/', async (request, reply) => {
@@ -65,7 +97,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         referredByCode: c.referredByCode,
         joinedDate: c.joinedDate,
         notes: c.notes,
-        activePlans: c.activePlans || [],
+        activePlans: resolveClientActivePlans(c),
       })),
     });
   });
@@ -107,7 +139,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         referredByCode: client.referredByCode,
         joinedDate: client.joinedDate,
         notes: client.notes,
-        activePlans: client.activePlans || [],
+        activePlans: resolveClientActivePlans(client),
       },
     });
   });
@@ -272,18 +304,13 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     });
 
     // Initialize or migrate activePlans array on client document
-    if (!client.activePlans) {
+    if (!client.activePlans || !Array.isArray(client.activePlans)) {
       client.activePlans = [];
     }
 
+    const hasExistingCapital = (Number(client.assignedPlanAmount) || 0) > 0;
     // If client had an existing plan that was not yet in activePlans, preserve it!
-    if (
-      client.activePlans.length === 0 &&
-      client.assignedPlanId &&
-      client.assignedPlanAmount &&
-      client.assignedPlanAmount > 0 &&
-      client.assignedPlanStatus === 'active'
-    ) {
+    if (client.activePlans.length === 0 && hasExistingCapital) {
       let prevPlan = null;
       if (client.assignedPlanId) {
         prevPlan = (await Plan.findOne({ planId: client.assignedPlanId })) ||
@@ -293,23 +320,24 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         prevPlan = await Plan.findOne({ planName: client.assignedPlanName });
       }
 
-      const prevDuration = prevPlan?.durationMonths || 14;
-      const prevDaily = prevPlan?.dailyReturnPct ?? 0.5;
-      const prevMonthly = prevPlan?.monthlyReturnPct ?? 15.0;
+      const is20M = (client.assignedPlanName || '').toLowerCase().includes('20') || (client.assignedPlanId || '').includes('7441');
+      const prevDuration = prevPlan?.durationMonths || (is20M ? 20 : 14);
+      const prevDaily = prevPlan?.dailyReturnPct ?? (is20M ? 0.33 : 0.5);
+      const prevMonthly = prevPlan?.monthlyReturnPct ?? (is20M ? 10.0 : 15.0);
       const prevGross = prevPlan?.grossTotalReturnPct ?? (prevMonthly * prevDuration);
 
       client.activePlans.push({
         planInstanceId: `plan-initial-${client.clientId}`,
-        planId: client.assignedPlanId,
-        planName: client.assignedPlanName || prevPlan?.planName || 'Primary Plan',
-        capitalAmount: client.assignedPlanAmount,
+        planId: client.assignedPlanId || (is20M ? 'plan-7441' : 'plan-14m-15pct'),
+        planName: client.assignedPlanName || prevPlan?.planName || (is20M ? 'INFINIX 20 months investment plan' : 'Primary Plan'),
+        capitalAmount: Number(client.assignedPlanAmount) || 0,
         startDate: client.assignedPlanStartDate || new Date().toISOString().split('T')[0],
         durationMonths: prevDuration,
         dailyReturnPct: prevDaily,
         monthlyReturnPct: prevMonthly,
         grossTotalReturnPct: prevGross,
         status: 'active',
-        paymentReference: 'Initial Plan',
+        paymentReference: 'Initial Mandate',
         assignedAt: client.assignedPlanStartDate || new Date().toISOString(),
       });
     }
@@ -355,6 +383,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     client.totalAum = totalActivePlanCapital;
     client.kycStatus = 'verified';
     client.isPhoneVerified = Boolean(client.phone && client.phone.trim().length >= 7);
+    client.markModified('activePlans');
     await client.save();
 
     // Update referrals where this client is the referee with their cumulative invested capital
@@ -381,7 +410,10 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     return reply.send({
       success: true,
       message: `Payment verified. "${resolvedPlanName}" successfully activated for ${client.firstName} ${client.lastName}.`,
-      data: client,
+      data: {
+        ...client.toObject(),
+        activePlans: resolveClientActivePlans(client),
+      },
     });
   });
 
