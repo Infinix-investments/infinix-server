@@ -152,22 +152,6 @@ export const SEED_PLANS = [
     isDefault: true,
     status: 'active' as const,
   },
-  {
-    planId: 'plan-6m-10pct',
-    planName: '6-Month Liquid Yield Accelerator',
-    description:
-      'Short-duration liquidity strategy: 10.0% monthly return payout across 6 contractual periods (60.0% gross return).',
-    monthlyReturnPct: 10.0,
-    durationMonths: 6,
-    capitalReturnMonthlyPct: 5.0,
-    profitMonthlyPct: 5.0,
-    grossTotalReturnPct: 160.0,
-    netProfitPct: 30.0,
-    minInvestment: 100,
-    maxInvestment: 10000000,
-    isDefault: false,
-    status: 'active' as const,
-  },
 ];
 
 export const SEED_INVESTMENTS = [

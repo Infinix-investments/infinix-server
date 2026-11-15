@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyPluginOptions } from 'fastify';
 import { Withdrawal } from '../models/Withdrawal.js';
 import { Client } from '../models/Client.js';
 import { Investment } from '../models/Investment.js';
+import { Plan } from '../models/Plan.js';
 import { Transaction } from '../models/Transaction.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { Referral } from '../models/Referral.js';
@@ -78,9 +79,21 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         ? new Date(client.assignedPlanStartDate)
         : new Date(client.joinedDate || Date.now());
       const pDays = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
-      const maxDays = 14 * 30;
+      
+      // Dynamic duration and daily return lookup based on assigned plan ID
+      let durMonths = 14;
+      let dailyRate = 0.005; // default 0.5%
+      if (client.assignedPlanId) {
+        const matchedPlan = await Plan.findOne({ planId: client.assignedPlanId });
+        if (matchedPlan) {
+          durMonths = matchedPlan.durationMonths || 14;
+          dailyRate = (matchedPlan.dailyReturnPct || 0.5) / 100;
+        }
+      }
+
+      const maxDays = durMonths * 30;
       const effectiveAccruedDays = Math.min(maxDays, pDays);
-      const dailyProfitAmount = (client.assignedPlanAmount || 0) * 0.005;
+      const dailyProfitAmount = (client.assignedPlanAmount || 0) * dailyRate;
       totalAccruedYield = Math.round(dailyProfitAmount * effectiveAccruedDays * 100) / 100;
     }
 
