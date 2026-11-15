@@ -7,7 +7,20 @@ import { Transaction } from '../models/Transaction.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { Referral } from '../models/Referral.js';
 
+// In-memory monotonic lock per client to block race-condition double-clicks
+const activeWithdrawalLocks = new Set<string>();
+
 export async function withdrawalRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
+  // GET /api/withdrawals/server-time (Authoritative server timestamp to eliminate device clock skew)
+  fastify.get('/server-time', async (request, reply) => {
+    const now = new Date();
+    return reply.send({
+      success: true,
+      serverTime: now.toISOString(),
+      timestamp: now.getTime(),
+    });
+  });
+
   // GET /api/withdrawals
   fastify.get('/', async (request, reply) => {
     const { clientId, status } = request.query as any;
@@ -16,9 +29,12 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     if (status) query.status = status;
 
     const withdrawals = await Withdrawal.find(query).sort({ createdAt: -1 });
+    const now = new Date();
 
     return reply.send({
       success: true,
+      serverTime: now.toISOString(),
+      timestamp: now.getTime(),
       data: withdrawals.map((w) => ({
         id: w.withdrawalId,
         withdrawalId: w.withdrawalId,
@@ -47,19 +63,34 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
   fastify.post('/request', async (request, reply) => {
     const { clientId, amount, requestedAmount, grossAmount, bankAccount, notes } = request.body as any;
 
-    const client = await Client.findOne({ clientId });
-    if (!client) {
-      return reply.status(404).send({ success: false, error: 'Client not found.' });
+    if (!clientId) {
+      return reply.status(400).send({ success: false, error: 'Client identification required.' });
     }
 
-    // Find all active plans/investments for this client
-    const activeInvestments = await Investment.find({
-      clientId: client.clientId,
-      assetClass: 'private_plan',
-      status: 'active',
-    });
+    const lockKey = String(clientId).trim().toLowerCase();
+    if (activeWithdrawalLocks.has(lockKey)) {
+      return reply.status(429).send({
+        success: false,
+        error: 'A withdrawal transaction for this account is already processing. Please wait a moment.',
+      });
+    }
 
-    const now = new Date();
+    activeWithdrawalLocks.add(lockKey);
+
+    try {
+      const client = await Client.findOne({ clientId });
+      if (!client) {
+        return reply.status(404).send({ success: false, error: 'Client not found.' });
+      }
+
+      // Find all active plans/investments for this client
+      const activeInvestments = await Investment.find({
+        clientId: client.clientId,
+        assetClass: 'private_plan',
+        status: 'active',
+      });
+
+      const now = new Date();
 
     // Calculate total yield accrued across ALL active plans individually
     let totalAccruedYield = 0;
@@ -189,15 +220,17 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       });
     }
 
-    // Check if client already has a withdrawal pending Admin approval/settlement
-    const pendingWd = await Withdrawal.findOne({
+    // Strict pending withdrawal check
+    const pendingWds = await Withdrawal.find({
       clientId: client.clientId,
       status: 'pending_approval',
     });
-    if (pendingWd) {
+    const totalPendingGross = pendingWds.reduce((sum, w) => sum + (w.grossAmount || w.amount), 0);
+    if (pendingWds.length > 0) {
+      const pendingAmount = pendingWds[0].grossAmount || pendingWds[0].amount;
       return reply.status(400).send({
         success: false,
-        error: `You already have a withdrawal request of ${(pendingWd.grossAmount || pendingWd.amount).toLocaleString()} USDT pending Admin settlement.`,
+        error: `You already have a withdrawal request of ${pendingAmount.toLocaleString()} USDT pending Admin settlement.`,
       });
     }
 
@@ -208,6 +241,9 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     });
     const totalWithdrawnGross = settledWds.reduce((sum, w) => sum + (w.grossAmount || w.amount), 0);
     const availableToWithdraw = Math.max(0, Math.round((totalAccruedYield + referralEarnings - totalWithdrawnGross) * 100) / 100);
+
+    // Reserved balance check: ensures that even if pending check was bypassed via direct API call, balance is strictly locked
+    const unreservedAvailable = Math.max(0, Math.round((availableToWithdraw - totalPendingGross) * 100) / 100);
 
     // 10-Day Mandatory Gap Rule
     const latestWd = await Withdrawal.findOne({
@@ -249,6 +285,13 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       });
     }
 
+    if (claimGross > unreservedAvailable) {
+      return reply.status(400).send({
+        success: false,
+        error: `Requested amount (${claimGross} USDT) exceeds unreserved available balance (${unreservedAvailable} USDT).`,
+      });
+    }
+
     if (claimGross <= 0) {
       return reply.status(400).send({
         success: false,
@@ -264,25 +307,37 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     const withdrawalId = `wd-${Date.now().toString().slice(-4)}`;
     const requestDate = new Date().toISOString().split('T')[0];
 
-    const withdrawal = await Withdrawal.create({
-      withdrawalId,
-      clientId: client.clientId,
-      clientName: `${client.firstName} ${client.lastName}`,
-      amount: netAmount,
-      grossAmount: claimGross,
-      partIndex: 1,
-      feePct: 3,
-      feeAmount,
-      netAmount,
-      isLate: false,
-      monthIndex: Math.min(14, Math.floor(diffDays / 30) + 1),
-      requestDate,
-      status: 'pending_approval',
-      bankAccount: bankAccount || client.bankAccount || 'USDT TRC20 Wallet',
-      notes:
-        notes ||
-        `Yield claim: ${claimGross.toLocaleString()} USDT • 3% Fee: ${feeAmount.toLocaleString()} USDT • Net: ${netAmount.toLocaleString()} USDT`,
-    });
+    let withdrawal;
+    try {
+      withdrawal = await Withdrawal.create({
+        withdrawalId,
+        clientId: client.clientId,
+        clientName: `${client.firstName} ${client.lastName}`,
+        amount: netAmount,
+        grossAmount: claimGross,
+        partIndex: 1,
+        feePct: 3,
+        feeAmount,
+        netAmount,
+        isLate: false,
+        monthIndex: Math.min(14, Math.floor(diffDays / 30) + 1),
+        requestDate,
+        status: 'pending_approval',
+        bankAccount: bankAccount || client.bankAccount || 'USDT TRC20 Wallet',
+        notes:
+          notes ||
+          `Yield claim: ${claimGross.toLocaleString()} USDT • 3% Fee: ${feeAmount.toLocaleString()} USDT • Net: ${netAmount.toLocaleString()} USDT`,
+      });
+    } catch (createErr: any) {
+      // Catch MongoDB duplicate key error on compound unique index (clientId + status: pending_approval)
+      if (createErr?.code === 11000) {
+        return reply.status(400).send({
+          success: false,
+          error: 'You already have a withdrawal request pending Admin settlement.',
+        });
+      }
+      throw createErr;
+    }
 
     client.lastWithdrawalDate = requestDate;
     await client.save();
@@ -301,6 +356,9 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       message: `Withdrawal request for ${netAmount.toLocaleString()} USDT submitted successfully (3% fee deducted).`,
       data: withdrawal,
     });
+  } finally {
+    activeWithdrawalLocks.delete(lockKey);
+  }
   });
 
   // PATCH /api/withdrawals/:id/status (Admin approval / disbursement)

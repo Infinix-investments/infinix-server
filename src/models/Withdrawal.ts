@@ -52,5 +52,15 @@ const WithdrawalSchema: Schema = new Schema(
   }
 );
 
+// Atomic database-level guarantee: a client can only have at most ONE pending withdrawal at any time.
+// Prevents race conditions from creating duplicate pending claims.
+WithdrawalSchema.index(
+  { clientId: 1, status: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'pending_approval' },
+  }
+);
+
 export const Withdrawal = mongoose.model<IWithdrawal>('Withdrawal', WithdrawalSchema);
 
