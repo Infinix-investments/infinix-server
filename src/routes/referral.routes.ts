@@ -41,7 +41,9 @@ export async function referralRoutes(fastify: FastifyInstance, options: FastifyP
       });
       for (const rc of registeredReferees) {
         const alreadyExists = referrals.some(
-          (r) => r.refereeId === rc.clientId || r.refereeEmail.toLowerCase() === rc.email.toLowerCase()
+          (r) =>
+            r.refereeId === rc.clientId ||
+            Boolean(r.refereeEmail && rc.email && r.refereeEmail.toLowerCase() === rc.email.toLowerCase())
         );
         if (!alreadyExists) {
           const cap = rc.assignedPlanAmount || 0;

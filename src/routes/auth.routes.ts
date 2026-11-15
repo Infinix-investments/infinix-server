@@ -20,14 +20,20 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    // Standard Database Lookup (Robust case-insensitive match for email & clientId)
-    const safeRegex = new RegExp(`^${loginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    // Standard Database Lookup (Robust case-insensitive match for email & clientId, plus digit-normalized phone match)
+    const cleanLoginId = (loginId || '').trim();
+    const safeRegex = new RegExp(`^${cleanLoginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const loginDigits = cleanLoginId.replace(/\D/g, '').slice(-10);
+    const loginQueries: any[] = [
+      { email: safeRegex },
+      { clientId: safeRegex },
+      { phone: cleanLoginId.replace(/[\s+-]/g, '') },
+    ];
+    if (loginDigits.length >= 7) {
+      loginQueries.push({ phone: new RegExp(`${loginDigits}$`) });
+    }
     const user = await Client.findOne({
-      $or: [
-        { email: safeRegex },
-        { clientId: safeRegex },
-        { phone: loginId.replace(/[\s+-]/g, '') },
-      ],
+      $or: loginQueries,
     });
 
     if (!user) {
@@ -487,10 +493,15 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     }
 
     const cleanPhone = phone.trim();
+    const phoneDigits = cleanPhone.replace(/\D/g, '').slice(-10);
+    const phoneOrQueries: any[] = [{ phone: cleanPhone }];
+    if (phoneDigits.length >= 7) {
+      phoneOrQueries.push({ phone: new RegExp(`${phoneDigits}$`) });
+    }
 
-    // Uniqueness check: reject if another account already holds this number
+    // Uniqueness check: reject if another account already holds this number (supports spaced/formatted numbers)
     const existingWithPhone = await Client.findOne({
-      phone: cleanPhone,
+      $or: phoneOrQueries,
       _id: { $ne: user._id },
     });
     if (existingWithPhone) {
@@ -544,9 +555,14 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       return reply.status(404).send({ success: false, error: 'User not found.' });
     }
 
-    // Uniqueness check: reject if another account already holds this number
+    // Uniqueness check: reject if another account already holds this number (supports spaced/formatted numbers)
+    const phoneDigits = cleanPhone.replace(/\D/g, '').slice(-10);
+    const phoneOrQueries: any[] = [{ phone: cleanPhone }];
+    if (phoneDigits.length >= 7) {
+      phoneOrQueries.push({ phone: new RegExp(`${phoneDigits}$`) });
+    }
     const existingWithPhone = await Client.findOne({
-      phone: cleanPhone,
+      $or: phoneOrQueries,
       _id: { $ne: user._id },
     });
     if (existingWithPhone) {
@@ -560,6 +576,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     user.isPhoneVerified = true;
     user.phoneVerifiedAt = new Date();
     await user.save();
+    await Referral.updateMany({ refereeId: user.clientId }, { refereePhone: cleanPhone });
 
     await AuditLog.create({
       auditId: `audit-${Date.now()}`,
@@ -639,9 +656,14 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    // Uniqueness check: reject if another account already holds this number
+    // Uniqueness check: reject if another account already holds this number (supports spaced/formatted numbers)
+    const phoneDigits = cleanPhone.replace(/\D/g, '').slice(-10);
+    const phoneOrQueries: any[] = [{ phone: cleanPhone }];
+    if (phoneDigits.length >= 7) {
+      phoneOrQueries.push({ phone: new RegExp(`${phoneDigits}$`) });
+    }
     const existingWithPhone = await Client.findOne({
-      phone: cleanPhone,
+      $or: phoneOrQueries,
       _id: { $ne: user._id },
     });
     if (existingWithPhone) {
@@ -657,6 +679,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     user.phoneOtp = undefined;
     user.phoneOtpExpires = undefined;
     await user.save();
+    await Referral.updateMany({ refereeId: user.clientId }, { refereePhone: cleanPhone });
 
     await AuditLog.create({
       auditId: `audit-${Date.now()}`,

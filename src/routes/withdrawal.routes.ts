@@ -130,6 +130,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
 
     // Earliest plan start date for initial 10-day unlock rule & cycle indexing
     let earliestStartDate = client.assignedPlanStartDate ? new Date(client.assignedPlanStartDate) : new Date(client.joinedDate || Date.now());
+    let maxDurationMonths = 14;
     if (activeInvestments.length > 0) {
       const dates = activeInvestments
         .map((i: any) => i.investmentDate ? new Date(i.investmentDate).getTime() : 0)
@@ -137,6 +138,11 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       if (dates.length > 0) {
         earliestStartDate = new Date(Math.min(...dates));
       }
+      const durations = activeInvestments.map((i: any) => Number(i.durationMonths) || 14);
+      maxDurationMonths = Math.max(...durations, 14);
+    } else if (client.assignedPlanId) {
+      const is20M = (client.assignedPlanName || '').toLowerCase().includes('20') || (client.assignedPlanId || '').includes('7441');
+      maxDurationMonths = is20M ? 20 : 14;
     }
     const diffDays = Math.max(0, Math.floor((now.getTime() - earliestStartDate.getTime()) / (1000 * 60 * 60 * 24)));
 
@@ -320,7 +326,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         feeAmount,
         netAmount,
         isLate: false,
-        monthIndex: Math.min(14, Math.floor(diffDays / 30) + 1),
+        monthIndex: Math.min(maxDurationMonths, Math.floor(diffDays / 30) + 1),
         requestDate,
         status: 'pending_approval',
         bankAccount: bankAccount || client.bankAccount || 'USDT TRC20 Wallet',

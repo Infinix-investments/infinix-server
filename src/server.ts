@@ -44,6 +44,16 @@ async function main() {
       },
     });
 
+    // Centralized Error Handler (guarantees clean JSON errors across all endpoints)
+    server.setErrorHandler((error: any, request, reply) => {
+      server.log.error(error);
+      const statusCode = error?.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;
+      reply.status(statusCode).send({
+        success: false,
+        error: error?.message || 'An unexpected server error occurred.',
+      });
+    });
+
     // 3. Health Check & Root Endpoints (instant response for Render & apps)
     server.get('/', async () => {
       return {

@@ -427,13 +427,16 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     await client.save();
 
     // Update referrals where this client is the referee with their cumulative invested capital
+    const directReferralEarned = Math.round(totalActivePlanCapital * 0.05 * 100) / 100;
     await Referral.updateMany(
       { refereeId: client.clientId },
       {
         status: 'active',
         planName: resolvedPlanName,
         capitalAmount: totalActivePlanCapital,
-        monthlyCommissionAmount: Math.round(totalActivePlanCapital * (monthlyReturnPct / 100) * 0.10),
+        commissionRatePct: 5.0,
+        monthlyCommissionAmount: directReferralEarned,
+        totalEarnedAmount: directReferralEarned,
       }
     );
 
@@ -511,12 +514,14 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       }
 
       // Update referral commissions
+      const updatedRefEarned = Math.round(totalCap * 0.05 * 100) / 100;
       await Referral.updateMany(
         { refereeId: client.clientId },
         {
           status: totalCap > 0 ? 'active' : 'pending',
           capitalAmount: totalCap,
-          monthlyCommissionAmount: Math.round(totalCap * ((revoked.monthlyReturnPct || 15) / 100) * 0.10),
+          monthlyCommissionAmount: updatedRefEarned,
+          totalEarnedAmount: updatedRefEarned,
         }
       );
 
@@ -568,6 +573,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         status: 'pending',
         capitalAmount: 0,
         monthlyCommissionAmount: 0,
+        totalEarnedAmount: 0,
       }
     );
 

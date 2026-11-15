@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyPluginOptions } from 'fastify';
+import mongoose from 'mongoose';
 import { Plan } from '../models/Plan.js';
 import { AuditLog } from '../models/AuditLog.js';
 
@@ -81,13 +82,18 @@ export async function planRoutes(fastify: FastifyInstance, options: FastifyPlugi
     const { id } = request.params as any;
     const updates = request.body as any;
 
-    const plan = await Plan.findOne({ planId: id });
+    const planQuery: any[] = [{ planId: id }];
+    if (mongoose.isValidObjectId(id)) {
+      planQuery.push({ _id: id });
+    }
+
+    const plan = await Plan.findOne({ $or: planQuery });
     if (!plan) {
       return reply.status(404).send({ success: false, error: 'Plan not found.' });
     }
 
     if (updates.isDefault) {
-      await Plan.updateMany({ planId: { $ne: id } }, { isDefault: false });
+      await Plan.updateMany({ _id: { $ne: plan._id } }, { isDefault: false });
     }
 
     Object.assign(plan, updates);
@@ -110,13 +116,18 @@ export async function planRoutes(fastify: FastifyInstance, options: FastifyPlugi
     const { id } = request.params as any;
     const body = (request.body as any) || {};
 
-    const plan = await Plan.findOne({ planId: id });
+    const planQuery: any[] = [{ planId: id }];
+    if (mongoose.isValidObjectId(id)) {
+      planQuery.push({ _id: id });
+    }
+
+    const plan = await Plan.findOne({ $or: planQuery });
     if (!plan) {
       return reply.status(404).send({ success: false, error: 'Plan not found.' });
     }
 
     const planName = plan.planName;
-    await Plan.deleteOne({ planId: id });
+    await Plan.deleteOne({ _id: plan._id });
 
     await AuditLog.create({
       auditId: `audit-${Date.now()}`,
