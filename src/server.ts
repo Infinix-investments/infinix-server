@@ -12,6 +12,7 @@ import { withdrawalRoutes } from './routes/withdrawal.routes.js';
 import { transactionRoutes } from './routes/transaction.routes.js';
 import { referralRoutes } from './routes/referral.routes.js';
 import { auditRoutes } from './routes/audit.routes.js';
+import { feedbackRoutes } from './routes/feedback.routes.js';
 
 dotenv.config();
 
@@ -90,6 +91,7 @@ async function main() {
     await server.register(transactionRoutes, { prefix: '/api/transactions' });
     await server.register(referralRoutes, { prefix: '/api/referrals' });
     await server.register(auditRoutes, { prefix: '/api/audit-logs' });
+    await server.register(feedbackRoutes, { prefix: '/api/feedbacks' });
 
     // 5. Start Listening immediately so Render health-check passes in <1s
     await server.listen({ port: PORT, host: HOST });
