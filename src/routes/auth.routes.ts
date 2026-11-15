@@ -227,7 +227,9 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       myReferralCode = `INF-${namePrefix}${Date.now().toString().slice(-4)}`;
     }
 
-    const cleanReferredBy = (referralCode || '').trim().toUpperCase();
+    const rawReferralInput = (referralCode || '').toString().trim().toUpperCase().replace(/\s+/g, '');
+    const coreRefCode = rawReferralInput.replace(/^INF-?/, '');
+    const canonicalReferredBy = coreRefCode ? `INF-${coreRefCode}` : '';
 
     // Generate 6-digit passcode
     const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -255,38 +257,56 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       currentMonthWithdrawn: false,
       totalAum: 0,
       referralCode: myReferralCode,
-      referredByCode: cleanReferredBy || undefined,
+      referredByCode: canonicalReferredBy || undefined,
       joinedDate: new Date().toISOString().split('T')[0],
     });
 
     // If registered via a referral code, link to referring client
-    if (cleanReferredBy) {
+    if (coreRefCode) {
       try {
+        const safeCoreRegex = coreRefCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const referrer = await Client.findOne({
           $or: [
-            { referralCode: new RegExp(`^${cleanReferredBy}$`, 'i') },
-            { clientId: cleanReferredBy.toLowerCase() },
+            { referralCode: canonicalReferredBy },
+            { referralCode: rawReferralInput },
+            { referralCode: new RegExp(`^(INF-?)?${safeCoreRegex}$`, 'i') },
+            { clientId: coreRefCode.toLowerCase() },
+            { clientId: rawReferralInput.toLowerCase() },
           ],
         });
         if (referrer) {
-          await Referral.create({
-            referralId: `ref-${Date.now().toString().slice(-4)}`,
-            referrerId: referrer.clientId,
-            referrerName: `${referrer.firstName} ${referrer.lastName}`,
-            referrerCode: referrer.referralCode || cleanReferredBy,
-            refereeId: newClient.clientId,
-            refereeName: `${newClient.firstName} ${newClient.lastName}`,
-            refereeEmail: newClient.email,
-            refereePhone: newClient.phone || '',
-            level: 1,
-            planName: '14-Month Wealth Accelerator',
-            capitalAmount: 0,
-            commissionRatePct: 5.0,
-            monthlyCommissionAmount: 0,
-            totalEarnedAmount: 0,
-            status: 'active',
-            dateJoined: newClient.joinedDate,
+          if (referrer.referralCode && newClient.referredByCode !== referrer.referralCode) {
+            newClient.referredByCode = referrer.referralCode;
+            await newClient.save();
+          }
+
+          const existingRef = await Referral.findOne({
+            $or: [
+              { refereeId: newClient.clientId },
+              { refereeEmail: newClient.email },
+            ],
           });
+
+          if (!existingRef) {
+            await Referral.create({
+              referralId: `ref-${Date.now().toString().slice(-4)}`,
+              referrerId: referrer.clientId,
+              referrerName: `${referrer.firstName} ${referrer.lastName}`.trim(),
+              referrerCode: referrer.referralCode || canonicalReferredBy,
+              refereeId: newClient.clientId,
+              refereeName: `${newClient.firstName} ${newClient.lastName}`.trim(),
+              refereeEmail: newClient.email,
+              refereePhone: newClient.phone || '',
+              level: 1,
+              planName: '14-Month Wealth Accelerator',
+              capitalAmount: 0,
+              commissionRatePct: 5.0,
+              monthlyCommissionAmount: 0,
+              totalEarnedAmount: 0,
+              status: 'active',
+              dateJoined: newClient.joinedDate,
+            });
+          }
         }
       } catch (err) {
         // Silently continue if referral creation fails
@@ -350,7 +370,11 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     }
 
     const queryOr: any[] = [];
-    if (email) queryOr.push({ email: email.trim().toLowerCase() });
+    if (email) {
+      const cleanEmail = email.trim().toLowerCase();
+      const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+      queryOr.push({ email: cleanEmail }, { email: safeEmailRegex });
+    }
     if (targetClientId) queryOr.push({ clientId: targetClientId }, { _id: targetClientId.length === 24 ? targetClientId : undefined });
 
     if (queryOr.filter(Boolean).length === 0) {
@@ -443,7 +467,11 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     const targetClientId = clientId || userId || id;
 
     const queryOr: any[] = [];
-    if (email) queryOr.push({ email: email.trim().toLowerCase() });
+    if (email) {
+      const cleanEmail = email.trim().toLowerCase();
+      const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+      queryOr.push({ email: cleanEmail }, { email: safeEmailRegex });
+    }
     if (targetClientId) queryOr.push({ clientId: targetClientId });
 
     const user = await Client.findOne(queryOr.length > 0 ? { $or: queryOr } : { clientId: 'none' });
@@ -504,7 +532,11 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
 
     const cleanPhone = phone.trim();
     const queryOr: any[] = [];
-    if (email) queryOr.push({ email: email.trim().toLowerCase() });
+    if (email) {
+      const cleanEmail = email.trim().toLowerCase();
+      const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+      queryOr.push({ email: cleanEmail }, { email: safeEmailRegex });
+    }
     if (targetClientId) queryOr.push({ clientId: targetClientId });
 
     const user = await Client.findOne(queryOr.length > 0 ? { $or: queryOr } : { clientId: 'none' });
@@ -569,7 +601,11 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     const targetClientId = clientId || userId || id;
 
     const queryOr: any[] = [];
-    if (email) queryOr.push({ email: email.trim().toLowerCase() });
+    if (email) {
+      const cleanEmail = email.trim().toLowerCase();
+      const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+      queryOr.push({ email: cleanEmail }, { email: safeEmailRegex });
+    }
     if (targetClientId) queryOr.push({ clientId: targetClientId });
 
     const user = await Client.findOne(queryOr.length > 0 ? { $or: queryOr } : { clientId: 'none' });
@@ -664,7 +700,11 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
     const targetClientId = clientId || userId || id;
 
     const queryOr: any[] = [];
-    if (email) queryOr.push({ email: email?.trim().toLowerCase() });
+    if (email) {
+      const cleanEmail = email.trim().toLowerCase();
+      const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+      queryOr.push({ email: cleanEmail }, { email: safeEmailRegex });
+    }
     if (targetClientId) queryOr.push({ clientId: targetClientId });
 
     const user = await Client.findOne(queryOr.length > 0 ? { $or: queryOr } : { clientId: 'none' });
@@ -700,7 +740,10 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    const user = await Client.findOne({ email: cleanEmail });
+    const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const user = await Client.findOne({
+      $or: [{ email: cleanEmail }, { email: safeEmailRegex }],
+    });
     if (!user) {
       return reply.status(404).send({
         success: false,
@@ -768,7 +811,10 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
-    const user = await Client.findOne({ email: cleanEmail });
+    const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const user = await Client.findOne({
+      $or: [{ email: cleanEmail }, { email: safeEmailRegex }],
+    });
     if (!user) {
       return reply.status(404).send({
         success: false,
@@ -848,10 +894,11 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
+    const safeEmailRegex = cleanEmail ? new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') : null;
     const user = await Client.findOne({
       $or: [
         ...(cleanId ? [{ clientId: cleanId }] : []),
-        ...(cleanEmail ? [{ email: cleanEmail }] : []),
+        ...(cleanEmail ? [{ email: cleanEmail }, { email: safeEmailRegex }] : []),
       ],
     });
 

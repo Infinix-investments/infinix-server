@@ -110,29 +110,70 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     const diffDays = Math.max(0, Math.floor((now.getTime() - earliestStartDate.getTime()) / (1000 * 60 * 60 * 24)));
 
     // Calculate referral earnings (5% of each active referee's invested capital)
+    // Multi-key deduplication prevents double-counting across duplicate Referral docs or registered client records
     let referralEarnings = 0;
     if (client.referralCode) {
+      const cleanNorm = client.referralCode.trim().toUpperCase().replace(/^INF-?/, '');
+      const canonicalCode = `INF-${cleanNorm}`;
+      const safeNorm = cleanNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
       const referralRecords = await Referral.find({
-        $or: [{ referrerId: client.clientId }, { referrerCode: client.referralCode }],
+        $or: [
+          { referrerId: client.clientId },
+          { referrerCode: client.referralCode },
+          { referrerCode: canonicalCode },
+          { referrerCode: new RegExp(`^(INF-?)?${safeNorm}$`, 'i') },
+        ],
         status: 'active',
       });
-      referralEarnings = referralRecords.reduce((sum, r) => {
-        const earned = Number(r.totalEarnedAmount) || Number(r.monthlyCommissionAmount) || Math.round(Number(r.capitalAmount || 0) * 0.05 * 100) / 100;
-        return sum + earned;
-      }, 0);
 
-      // Also check for clients who registered with this referral code but don't have a Referral doc
-      const refereeClientIds = new Set(referralRecords.map((r) => r.refereeId));
-      const cleanNorm = client.referralCode.trim().toUpperCase().replace(/^INF-?/, '');
+      const countedRefereeKeys = new Set<string>();
+
+      for (const r of referralRecords) {
+        const refId = (r.refereeId || '').toString().trim().toLowerCase();
+        const refEmail = (r.refereeEmail || '').toString().trim().toLowerCase();
+        const refPhone = (r.refereePhone || '').toString().trim().replace(/[\s+-]/g, '');
+
+        const isAlreadyCounted =
+          (refId && countedRefereeKeys.has(`id:${refId}`)) ||
+          (refEmail && countedRefereeKeys.has(`email:${refEmail}`)) ||
+          (refPhone && countedRefereeKeys.has(`phone:${refPhone}`));
+
+        if (isAlreadyCounted) continue;
+
+        if (refId) countedRefereeKeys.add(`id:${refId}`);
+        if (refEmail) countedRefereeKeys.add(`email:${refEmail}`);
+        if (refPhone) countedRefereeKeys.add(`phone:${refPhone}`);
+
+        const earned = Number(r.totalEarnedAmount) || Number(r.monthlyCommissionAmount) || Math.round(Number(r.capitalAmount || 0) * 0.05 * 100) / 100;
+        referralEarnings += earned;
+      }
+
+      // Also check for clients who registered with this referral code but don't have a counted Referral doc
       const registeredReferees = await Client.find({
         $or: [
           { referredByCode: client.referralCode },
-          { referredByCode: new RegExp(`^(INF-?)?${cleanNorm}$`, 'i') },
+          { referredByCode: canonicalCode },
+          { referredByCode: new RegExp(`^(INF-?)?${safeNorm}$`, 'i') },
         ],
         assignedPlanStatus: 'active',
       });
+
       for (const rc of registeredReferees) {
-        if (!refereeClientIds.has(rc.clientId)) {
+        const rcId = (rc.clientId || rc._id?.toString() || '').trim().toLowerCase();
+        const rcEmail = (rc.email || '').trim().toLowerCase();
+        const rcPhone = (rc.phone || '').trim().replace(/[\s+-]/g, '');
+
+        const isAlreadyCounted =
+          (rcId && countedRefereeKeys.has(`id:${rcId}`)) ||
+          (rcEmail && countedRefereeKeys.has(`email:${rcEmail}`)) ||
+          (rcPhone && countedRefereeKeys.has(`phone:${rcPhone}`));
+
+        if (!isAlreadyCounted) {
+          if (rcId) countedRefereeKeys.add(`id:${rcId}`);
+          if (rcEmail) countedRefereeKeys.add(`email:${rcEmail}`);
+          if (rcPhone) countedRefereeKeys.add(`phone:${rcPhone}`);
+
           const cap = Number(rc.assignedPlanAmount) || 0;
           if (cap > 0) {
             referralEarnings += Math.round(cap * 0.05 * 100) / 100;

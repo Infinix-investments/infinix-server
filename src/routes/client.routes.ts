@@ -153,7 +153,8 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     }
 
     const cleanEmail = body.email.trim().toLowerCase();
-    const existing = await Client.findOne({ email: cleanEmail });
+    const safeEmailRegex = new RegExp(`^${cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const existing = await Client.findOne({ $or: [{ email: cleanEmail }, { email: safeEmailRegex }] });
     if (existing) {
       return reply.status(400).send({ success: false, error: 'A client with this email already exists.' });
     }
