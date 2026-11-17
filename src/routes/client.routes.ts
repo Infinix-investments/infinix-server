@@ -771,19 +771,39 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       });
     }
 
-    const sponsor = await resolveSponsorClient(sponsorIdOrCode);
-    if (!sponsor) {
-      return reply.status(400).send({
-        success: false,
-        error: `Sponsor matching "${sponsorIdOrCode}" was not found.`,
-      });
-    }
-
     const referee = await resolveSponsorClient(refereeIdOrCode);
     if (!referee) {
       return reply.status(400).send({
         success: false,
         error: `Referee matching "${refereeIdOrCode}" was not found.`,
+      });
+    }
+
+    // Support unlinking a sponsor if an error/oversight occurred
+    if (sponsorIdOrCode === 'unlink' || sponsorIdOrCode === 'NONE') {
+      const prevReferrer = referee.referredByCode || 'None';
+      referee.referredByCode = undefined;
+      await referee.save();
+      await Referral.deleteOne({ refereeId: referee.clientId });
+      await AuditLog.create({
+        auditId: `audit-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        adminName: adminName || 'Wealth Administrator',
+        action: 'Referral Unlinked',
+        category: 'client_verification',
+        details: `Unlinked referee ${referee.firstName} ${referee.lastName} (${referee.clientId}) from previous sponsor ${prevReferrer}.`,
+      });
+      return reply.send({
+        success: true,
+        message: `Successfully unlinked sponsor from ${referee.firstName} ${referee.lastName}.`,
+      });
+    }
+
+    const sponsor = await resolveSponsorClient(sponsorIdOrCode);
+    if (!sponsor) {
+      return reply.status(400).send({
+        success: false,
+        error: `Sponsor matching "${sponsorIdOrCode}" was not found.`,
       });
     }
 
