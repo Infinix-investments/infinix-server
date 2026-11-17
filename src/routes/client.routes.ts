@@ -6,6 +6,7 @@ import { Plan } from '../models/Plan.js';
 import { Investment } from '../models/Investment.js';
 import { Referral } from '../models/Referral.js';
 import { AuditLog } from '../models/AuditLog.js';
+import { resolveSponsorClient } from './auth.routes.js';
 
 export function resolveClientActivePlans(c: any): any[] {
   if (Array.isArray(c.activePlans) && c.activePlans.length > 0) {
@@ -95,6 +96,8 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         totalAum: c.totalAum,
         referralCode: c.referralCode,
         referredByCode: c.referredByCode,
+        isLevelIncomeUnlocked: Boolean(c.isLevelIncomeUnlocked),
+        levelIncomeUnlockedAt: c.levelIncomeUnlockedAt || null,
         joinedDate: c.joinedDate,
         notes: c.notes,
         activePlans: resolveClientActivePlans(c),
@@ -137,6 +140,8 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         totalAum: client.totalAum,
         referralCode: client.referralCode,
         referredByCode: client.referredByCode,
+        isLevelIncomeUnlocked: Boolean(client.isLevelIncomeUnlocked),
+        levelIncomeUnlockedAt: client.levelIncomeUnlockedAt || null,
         joinedDate: client.joinedDate,
         notes: client.notes,
         activePlans: resolveClientActivePlans(client),
@@ -426,19 +431,40 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
     client.markModified('activePlans');
     await client.save();
 
-    // Update referrals where this client is the referee with their cumulative invested capital
+    // Update or automatically create referral record where this client is the referee with their cumulative invested capital
     const directReferralEarned = Math.round(totalActivePlanCapital * 0.05 * 100) / 100;
-    await Referral.updateMany(
-      { refereeId: client.clientId },
-      {
-        status: 'active',
-        planName: resolvedPlanName,
-        capitalAmount: totalActivePlanCapital,
-        commissionRatePct: 5.0,
-        monthlyCommissionAmount: directReferralEarned,
-        totalEarnedAmount: directReferralEarned,
+    const existingRef = await Referral.findOne({ refereeId: client.clientId });
+    if (existingRef) {
+      existingRef.status = 'active';
+      existingRef.planName = resolvedPlanName;
+      existingRef.capitalAmount = totalActivePlanCapital;
+      existingRef.commissionRatePct = 5.0;
+      existingRef.monthlyCommissionAmount = directReferralEarned;
+      existingRef.totalEarnedAmount = directReferralEarned;
+      await existingRef.save();
+    } else if (client.referredByCode) {
+      const sponsor = await resolveSponsorClient(client.referredByCode);
+      if (sponsor) {
+        await Referral.create({
+          referralId: `ref-${Date.now().toString().slice(-4)}`,
+          referrerId: sponsor.clientId,
+          referrerName: `${sponsor.firstName} ${sponsor.lastName}`.trim(),
+          referrerCode: sponsor.referralCode,
+          refereeId: client.clientId,
+          refereeName: `${client.firstName} ${client.lastName}`.trim(),
+          refereeEmail: client.email,
+          refereePhone: client.phone || '',
+          level: 1,
+          planName: resolvedPlanName,
+          capitalAmount: totalActivePlanCapital,
+          commissionRatePct: 5.0,
+          monthlyCommissionAmount: directReferralEarned,
+          totalEarnedAmount: directReferralEarned,
+          status: 'active',
+          dateJoined: client.joinedDate || activeStartDate,
+        });
       }
-    );
+    }
 
     // Record in Audit Log
     await AuditLog.create({
@@ -591,6 +617,252 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       success: true,
       message: `Investment plan revoked successfully for ${client.firstName} ${client.lastName}.`,
       data: client,
+    });
+  });
+
+  // POST /api/clients/:id/link-referrer (Link or change referee's sponsor)
+  fastify.post('/:id/link-referrer', async (request, reply) => {
+    const { id } = request.params as any;
+    const { referrerCode, adminName } = (request.body as any) || {};
+
+    const rawInput = (referrerCode || '').toString().trim();
+    if (!rawInput) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please provide a valid sponsor referral code, client ID, email, or phone number.',
+      });
+    }
+
+    const client = (await Client.findOne({ clientId: id })) || (await Client.findById(id));
+    if (!client) {
+      return reply.status(404).send({ success: false, error: 'Client not found.' });
+    }
+
+    const sponsor = await resolveSponsorClient(rawInput);
+    if (!sponsor) {
+      return reply.status(400).send({
+        success: false,
+        error: `No registered investor found matching "${rawInput}". Please check the referral code or Client ID.`,
+      });
+    }
+
+    if (sponsor.clientId === client.clientId) {
+      return reply.status(400).send({
+        success: false,
+        error: 'A client cannot be their own sponsor.',
+      });
+    }
+
+    const prevReferrer = client.referredByCode || 'None';
+    client.referredByCode = sponsor.referralCode;
+    await client.save();
+
+    // Calculate commission if client has active plan
+    const activeCapital = Number(client.assignedPlanAmount) || 0;
+    const isPlanActive = client.assignedPlanStatus === 'active' && activeCapital > 0;
+    const directBonus = isPlanActive ? Math.round(activeCapital * 0.05 * 100) / 100 : 0;
+
+    // Create or update Referral record
+    let referral = await Referral.findOne({ refereeId: client.clientId });
+    if (referral) {
+      referral.referrerId = sponsor.clientId;
+      referral.referrerName = `${sponsor.firstName} ${sponsor.lastName}`.trim();
+      referral.referrerCode = sponsor.referralCode;
+      referral.refereeName = `${client.firstName} ${client.lastName}`.trim();
+      referral.refereeEmail = client.email;
+      referral.refereePhone = client.phone || '';
+      referral.capitalAmount = activeCapital;
+      referral.monthlyCommissionAmount = directBonus;
+      referral.totalEarnedAmount = directBonus;
+      referral.status = isPlanActive ? 'active' : 'pending_activation';
+      referral.planName = client.assignedPlanName || referral.planName || 'Active Investment Plan';
+      await referral.save();
+    } else {
+      referral = await Referral.create({
+        referralId: `ref-${Date.now().toString().slice(-4)}`,
+        referrerId: sponsor.clientId,
+        referrerName: `${sponsor.firstName} ${sponsor.lastName}`.trim(),
+        referrerCode: sponsor.referralCode,
+        refereeId: client.clientId,
+        refereeName: `${client.firstName} ${client.lastName}`.trim(),
+        refereeEmail: client.email,
+        refereePhone: client.phone || '',
+        level: 1,
+        planName: client.assignedPlanName || 'Active Investment Plan',
+        capitalAmount: activeCapital,
+        commissionRatePct: 5.0,
+        monthlyCommissionAmount: directBonus,
+        totalEarnedAmount: directBonus,
+        status: isPlanActive ? 'active' : 'pending_activation',
+        dateJoined: client.joinedDate || new Date().toISOString().split('T')[0],
+      });
+    }
+
+    await AuditLog.create({
+      auditId: `audit-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      adminName: adminName || 'Wealth Administrator',
+      action: 'Referral Link Updated',
+      category: 'client_verification',
+      details: `Linked client ${client.firstName} ${client.lastName} (${client.clientId}) to sponsor ${sponsor.firstName} ${sponsor.lastName} (${sponsor.referralCode}). Previous: ${prevReferrer}. Capital: ${activeCapital} USDT, Direct Commission: ${directBonus} USDT.`,
+    });
+
+    return reply.send({
+      success: true,
+      message: `Successfully linked ${client.firstName} ${client.lastName} to sponsor ${sponsor.firstName} ${sponsor.lastName} (${sponsor.referralCode}).`,
+      data: {
+        clientId: client.clientId,
+        referredByCode: client.referredByCode,
+        sponsor: {
+          clientId: sponsor.clientId,
+          name: `${sponsor.firstName} ${sponsor.lastName}`.trim(),
+          referralCode: sponsor.referralCode,
+        },
+        referral,
+      },
+    });
+  });
+
+  // POST /api/clients/:id/toggle-level-income
+  fastify.post('/:id/toggle-level-income', async (request, reply) => {
+    const { id } = request.params as any;
+    const { unlocked, adminName } = (request.body as any) || {};
+
+    const client = (await Client.findOne({ clientId: id })) || (await Client.findById(id));
+    if (!client) {
+      return reply.status(404).send({ success: false, error: 'Client not found.' });
+    }
+
+    const nextState = typeof unlocked === 'boolean' ? unlocked : !client.isLevelIncomeUnlocked;
+    client.isLevelIncomeUnlocked = nextState;
+    if (nextState) {
+      client.levelIncomeUnlockedAt = new Date();
+    }
+    await client.save();
+
+    await AuditLog.create({
+      auditId: `audit-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      adminName: adminName || 'Wealth Administrator',
+      action: nextState ? 'Level Income Unlocked' : 'Level Income Locked',
+      category: 'client_verification',
+      details: `${nextState ? 'Unlocked' : 'Locked'} 5-Tier Level Income privilege for client ${client.firstName} ${client.lastName} (${client.clientId}).`,
+    });
+
+    return reply.send({
+      success: true,
+      message: `Successfully ${nextState ? 'unlocked' : 'locked'} Level Income for ${client.firstName} ${client.lastName}.`,
+      data: {
+        clientId: client.clientId,
+        isLevelIncomeUnlocked: client.isLevelIncomeUnlocked,
+        levelIncomeUnlockedAt: client.levelIncomeUnlockedAt,
+      },
+    });
+  });
+
+  // POST /api/clients/add-missed-referral
+  fastify.post('/add-missed-referral', async (request, reply) => {
+    const { sponsorIdOrCode, refereeIdOrCode, adminName } = (request.body as any) || {};
+
+    if (!sponsorIdOrCode || !refereeIdOrCode) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Please provide both Sponsor identifier (Code/ID/Email/Phone) and Referee identifier (ID/Email/Phone).',
+      });
+    }
+
+    const sponsor = await resolveSponsorClient(sponsorIdOrCode);
+    if (!sponsor) {
+      return reply.status(400).send({
+        success: false,
+        error: `Sponsor matching "${sponsorIdOrCode}" was not found.`,
+      });
+    }
+
+    const referee = await resolveSponsorClient(refereeIdOrCode);
+    if (!referee) {
+      return reply.status(400).send({
+        success: false,
+        error: `Referee matching "${refereeIdOrCode}" was not found.`,
+      });
+    }
+
+    if (sponsor.clientId === referee.clientId) {
+      return reply.status(400).send({
+        success: false,
+        error: 'A client cannot be their own sponsor.',
+      });
+    }
+
+    const prevReferrer = referee.referredByCode || 'None';
+    referee.referredByCode = sponsor.referralCode;
+    await referee.save();
+
+    const activeCapital = Number(referee.assignedPlanAmount) || 0;
+    const isPlanActive = referee.assignedPlanStatus === 'active' && activeCapital > 0;
+    const directBonus = isPlanActive ? Math.round(activeCapital * 0.05 * 100) / 100 : 0;
+
+    let referral = await Referral.findOne({ refereeId: referee.clientId });
+    if (referral) {
+      referral.referrerId = sponsor.clientId;
+      referral.referrerName = `${sponsor.firstName} ${sponsor.lastName}`.trim();
+      referral.referrerCode = sponsor.referralCode;
+      referral.refereeName = `${referee.firstName} ${referee.lastName}`.trim();
+      referral.refereeEmail = referee.email;
+      referral.refereePhone = referee.phone || '';
+      referral.capitalAmount = activeCapital;
+      referral.monthlyCommissionAmount = directBonus;
+      referral.totalEarnedAmount = directBonus;
+      referral.status = isPlanActive ? 'active' : 'pending_activation';
+      referral.planName = referee.assignedPlanName || referral.planName || 'Active Investment Plan';
+      await referral.save();
+    } else {
+      referral = await Referral.create({
+        referralId: `ref-${Date.now().toString().slice(-4)}`,
+        referrerId: sponsor.clientId,
+        referrerName: `${sponsor.firstName} ${sponsor.lastName}`.trim(),
+        referrerCode: sponsor.referralCode,
+        refereeId: referee.clientId,
+        refereeName: `${referee.firstName} ${referee.lastName}`.trim(),
+        refereeEmail: referee.email,
+        refereePhone: referee.phone || '',
+        level: 1,
+        planName: referee.assignedPlanName || 'Active Investment Plan',
+        capitalAmount: activeCapital,
+        commissionRatePct: 5.0,
+        monthlyCommissionAmount: directBonus,
+        totalEarnedAmount: directBonus,
+        status: isPlanActive ? 'active' : 'pending_activation',
+        dateJoined: referee.joinedDate || new Date().toISOString().split('T')[0],
+      });
+    }
+
+    await AuditLog.create({
+      auditId: `audit-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      adminName: adminName || 'Wealth Administrator',
+      action: 'Missed Referral Added',
+      category: 'client_verification',
+      details: `Added missed referral: Linked referee ${referee.firstName} ${referee.lastName} (${referee.clientId}) to sponsor ${sponsor.firstName} ${sponsor.lastName} (${sponsor.referralCode}). Capital: ${activeCapital} USDT, Direct Bonus: ${directBonus} USDT. Previous Sponsor: ${prevReferrer}.`,
+    });
+
+    return reply.send({
+      success: true,
+      message: `Successfully linked missed referral: ${referee.firstName} ${referee.lastName} to sponsor ${sponsor.firstName} ${sponsor.lastName}.`,
+      data: {
+        sponsor: {
+          clientId: sponsor.clientId,
+          name: `${sponsor.firstName} ${sponsor.lastName}`.trim(),
+          referralCode: sponsor.referralCode,
+        },
+        referee: {
+          clientId: referee.clientId,
+          name: `${referee.firstName} ${referee.lastName}`.trim(),
+          email: referee.email,
+          referredByCode: referee.referredByCode,
+        },
+        referral,
+      },
     });
   });
 }
