@@ -6,6 +6,99 @@ import { AuditLog } from '../models/AuditLog.js';
 import { sendOtpEmail, sendPasswordResetEmail } from '../services/email.service.js';
 import { resolveClientActivePlans } from './client.routes.js';
 
+/**
+ * Resilient Sponsor Resolution:
+ * Looks up sponsor by:
+ * - Full referralCode (e.g. INF-IRSHAD7829)
+ * - Core referralCode without prefix (e.g. IRSHAD7829)
+ * - Raw Client ID (e.g. c-9102)
+ * - Stripped Client ID with leading '#' (e.g. #c-9102)
+ * - Stripped Client ID with tier suffixes (e.g. #c-9102standard, c-9102standard)
+ * - Pure digits (e.g. 9102 -> c-9102)
+ * - Sponsor's email address
+ * - Sponsor's phone digits
+ */
+export async function resolveSponsorClient(sponsorInput?: string): Promise<any> {
+  if (!sponsorInput || typeof sponsorInput !== 'string') return null;
+
+  const raw = sponsorInput.trim();
+  if (!raw) return null;
+
+  // 1. Strip leading #, @, or spaces
+  const cleaned = raw.replace(/^[#@\s]+/, '').trim();
+
+  // 2. Strip trailing tier suffixes commonly appended by UI badges (e.g. "c-9102standard" -> "c-9102")
+  const tierSuffixes = /(standard|vip|prime|elite|institutional|growth|sovereign)$/i;
+  const withoutTier = cleaned.replace(tierSuffixes, '').trim();
+
+  // 3. Normalization without INF- prefix
+  const upperRaw = raw.toUpperCase().replace(/\s+/g, '');
+  const upperClean = cleaned.toUpperCase().replace(/\s+/g, '');
+  const upperWithoutTier = withoutTier.toUpperCase().replace(/\s+/g, '');
+
+  const coreCode = upperClean.replace(/^INF-?/, '');
+  const coreWithoutTier = upperWithoutTier.replace(/^INF-?/, '');
+
+  const canonicalCode = coreCode ? `INF-${coreCode}` : '';
+  const canonicalWithoutTier = coreWithoutTier ? `INF-${coreWithoutTier}` : '';
+
+  // 4. Construct search filters
+  const queries: any[] = [];
+
+  // Match referralCode
+  if (canonicalCode) queries.push({ referralCode: canonicalCode });
+  if (canonicalWithoutTier && canonicalWithoutTier !== canonicalCode) queries.push({ referralCode: canonicalWithoutTier });
+  if (coreCode) {
+    const safeCore = coreCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    queries.push({ referralCode: new RegExp(`^(INF-?)?${safeCore}$`, 'i') });
+  }
+  if (coreWithoutTier && coreWithoutTier !== coreCode) {
+    const safeCore = coreWithoutTier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    queries.push({ referralCode: new RegExp(`^(INF-?)?${safeCore}$`, 'i') });
+  }
+
+  // Match clientId (case-insensitive)
+  if (cleaned) {
+    queries.push({ clientId: cleaned.toLowerCase() });
+  }
+  if (withoutTier && withoutTier !== cleaned) {
+    queries.push({ clientId: withoutTier.toLowerCase() });
+  }
+  if (coreCode) {
+    queries.push({ clientId: coreCode.toLowerCase() });
+    queries.push({ clientId: `c-${coreCode.toLowerCase()}` });
+  }
+  if (coreWithoutTier && coreWithoutTier !== coreCode) {
+    queries.push({ clientId: coreWithoutTier.toLowerCase() });
+    queries.push({ clientId: `c-${coreWithoutTier.toLowerCase()}` });
+  }
+  // Pure numeric ID (e.g. "9102" -> "c-9102")
+  const digitsOnly = cleaned.replace(/\D/g, '');
+  if (digitsOnly.length >= 3 && digitsOnly.length <= 6) {
+    queries.push({ clientId: `c-${digitsOnly}` });
+  }
+
+  // Match email
+  if (raw.includes('@')) {
+    const cleanEmail = raw.toLowerCase().replace(/\s+/g, '');
+    const safeEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    queries.push({ email: cleanEmail });
+    queries.push({ email: new RegExp(`^${safeEmail}$`, 'i') });
+  }
+
+  // Match phone (e.g. 10 digits or >= 7 digits, allowing optional spaces/hyphens between digits)
+  const phoneDigits = raw.replace(/\D/g, '').slice(-10);
+  if (phoneDigits.length >= 7) {
+    const spacedPhonePattern = phoneDigits.split('').join('[\\s\\-]*');
+    queries.push({ phone: new RegExp(`${spacedPhonePattern}$`) });
+    queries.push({ phone: raw });
+  }
+
+  if (queries.length === 0) return null;
+
+  return await Client.findOne({ $or: queries });
+}
+
 export async function authRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   // POST /api/auth/login
   fastify.post('/login', async (request, reply) => {
@@ -155,6 +248,23 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       });
     }
 
+    // Strict sponsor validation: registration on INFINIX is by invitation only
+    const rawRefCode = (referralCode || '').toString().trim();
+    if (!rawRefCode) {
+      return reply.status(400).send({
+        success: false,
+        error: 'A sponsor referral code is required to register on INFINIX. Please enter the invitation code from your sponsor.',
+      });
+    }
+
+    const sponsor = await resolveSponsorClient(rawRefCode);
+    if (!sponsor) {
+      return reply.status(400).send({
+        success: false,
+        error: `Invalid sponsor referral code "${rawRefCode}". No registered investor was found matching this code, ID, or email. Please verify with your sponsor.`,
+      });
+    }
+
     // Salt and hash password with bcrypt
     const hashedPassword = await bcrypt.hash(cleanPassword, 10);
 
@@ -174,6 +284,9 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       existing.firstName = cleanFirstName;
       existing.lastName = cleanLastName;
       existing.password = hashedPassword;
+      if (sponsor?.referralCode) {
+        existing.referredByCode = sponsor.referralCode;
+      }
       const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
       existing.emailOtp = generatedOtp;
       existing.emailOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
@@ -233,10 +346,6 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       myReferralCode = `INF-${namePrefix}${Date.now().toString().slice(-4)}`;
     }
 
-    const rawReferralInput = (referralCode || '').toString().trim().toUpperCase().replace(/\s+/g, '');
-    const coreRefCode = rawReferralInput.replace(/^INF-?/, '');
-    const canonicalReferredBy = coreRefCode ? `INF-${coreRefCode}` : '';
-
     // Generate 6-digit passcode
     const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
@@ -263,60 +372,41 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       currentMonthWithdrawn: false,
       totalAum: 0,
       referralCode: myReferralCode,
-      referredByCode: canonicalReferredBy || undefined,
+      referredByCode: sponsor.referralCode,
       joinedDate: new Date().toISOString().split('T')[0],
     });
 
-    // If registered via a referral code, link to referring client
-    if (coreRefCode) {
-      try {
-        const safeCoreRegex = coreRefCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const referrer = await Client.findOne({
-          $or: [
-            { referralCode: canonicalReferredBy },
-            { referralCode: rawReferralInput },
-            { referralCode: new RegExp(`^(INF-?)?${safeCoreRegex}$`, 'i') },
-            { clientId: coreRefCode.toLowerCase() },
-            { clientId: rawReferralInput.toLowerCase() },
-          ],
+    // Link referral record to verified sponsor
+    try {
+      const existingRef = await Referral.findOne({
+        $or: [
+          { refereeId: newClient.clientId },
+          { refereeEmail: newClient.email },
+        ],
+      });
+
+      if (!existingRef) {
+        await Referral.create({
+          referralId: `ref-${Date.now().toString().slice(-4)}`,
+          referrerId: sponsor.clientId,
+          referrerName: `${sponsor.firstName} ${sponsor.lastName}`.trim(),
+          referrerCode: sponsor.referralCode,
+          refereeId: newClient.clientId,
+          refereeName: `${newClient.firstName} ${newClient.lastName}`.trim(),
+          refereeEmail: newClient.email,
+          refereePhone: newClient.phone || '',
+          level: 1,
+          planName: '14-Month Wealth Accelerator',
+          capitalAmount: 0,
+          commissionRatePct: 5.0,
+          monthlyCommissionAmount: 0,
+          totalEarnedAmount: 0,
+          status: 'pending_activation',
+          dateJoined: newClient.joinedDate,
         });
-        if (referrer) {
-          if (referrer.referralCode && newClient.referredByCode !== referrer.referralCode) {
-            newClient.referredByCode = referrer.referralCode;
-            await newClient.save();
-          }
-
-          const existingRef = await Referral.findOne({
-            $or: [
-              { refereeId: newClient.clientId },
-              { refereeEmail: newClient.email },
-            ],
-          });
-
-          if (!existingRef) {
-            await Referral.create({
-              referralId: `ref-${Date.now().toString().slice(-4)}`,
-              referrerId: referrer.clientId,
-              referrerName: `${referrer.firstName} ${referrer.lastName}`.trim(),
-              referrerCode: referrer.referralCode || canonicalReferredBy,
-              refereeId: newClient.clientId,
-              refereeName: `${newClient.firstName} ${newClient.lastName}`.trim(),
-              refereeEmail: newClient.email,
-              refereePhone: newClient.phone || '',
-              level: 1,
-              planName: '14-Month Wealth Accelerator',
-              capitalAmount: 0,
-              commissionRatePct: 5.0,
-              monthlyCommissionAmount: 0,
-              totalEarnedAmount: 0,
-              status: 'active',
-              dateJoined: newClient.joinedDate,
-            });
-          }
-        }
-      } catch (err) {
-        // Silently continue if referral creation fails
       }
+    } catch (err: any) {
+      console.error('[Auth] Error linking referrer record:', err.message);
     }
 
     // Send 6-digit passcode to user's email asynchronously so client never hangs
@@ -330,7 +420,7 @@ export async function authRoutes(fastify: FastifyInstance, options: FastifyPlugi
       adminName: 'Registration Service',
       action: 'Investor Registration Initiated',
       category: 'client_verification',
-      details: `New investor registered: ${newClient.firstName} ${newClient.lastName} (${cleanEmail}). Passcode dispatched to email.`,
+      details: `New investor registered: ${newClient.firstName} ${newClient.lastName} (${cleanEmail}) under sponsor ${sponsor.firstName} ${sponsor.lastName} (${sponsor.referralCode}). Passcode dispatched to email.`,
     });
 
     const token = fastify.jwt.sign({
