@@ -51,6 +51,8 @@ export interface IClient extends Document {
   notes?: string;
   referralCode?: string;
   referredByCode?: string;
+  isLevelIncomeUnlocked?: boolean;
+  levelIncomeUnlockedAt?: Date;
   joinedDate: string;
   createdAt: Date;
   updatedAt: Date;
@@ -131,6 +133,8 @@ const ClientSchema: Schema = new Schema(
     notes: { type: String, default: '' },
     referralCode: { type: String, index: true },
     referredByCode: { type: String },
+    isLevelIncomeUnlocked: { type: Boolean, default: false },
+    levelIncomeUnlockedAt: { type: Date },
     joinedDate: { type: String, default: () => new Date().toISOString().split('T')[0] },
   },
   {
