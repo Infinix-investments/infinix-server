@@ -182,7 +182,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         if (refEmail) countedRefereeKeys.add(`email:${refEmail}`);
         if (refPhone) countedRefereeKeys.add(`phone:${refPhone}`);
 
-        const earned = Number(r.totalEarnedAmount) || Number(r.monthlyCommissionAmount) || Math.round(Number(r.capitalAmount || 0) * 0.05 * 100) / 100;
+        const earned = Number(r.totalEarnedAmount) || Number(r.monthlyCommissionAmount) || (Number(r.capitalAmount || 0) * 0.05);
         referralEarnings += earned;
       }
 
@@ -213,7 +213,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
 
           const cap = Number(rc.assignedPlanAmount) || 0;
           if (cap > 0) {
-            referralEarnings += Math.round(cap * 0.05 * 100) / 100;
+            referralEarnings += cap * 0.05;
           }
         }
       }
@@ -297,7 +297,6 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         currentParents = nextParents;
         if (currentParents.length === 0) break;
       }
-      levelIncomeEarnings = Math.round(levelIncomeEarnings * 100) / 100;
     }
 
     if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') && referralEarnings <= 0 && levelIncomeEarnings <= 0) {
