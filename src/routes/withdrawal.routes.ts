@@ -219,7 +219,88 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       }
     }
 
-    if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') && referralEarnings <= 0) {
+    // Calculate 5-Tier Level Income if client has unlocked privilege
+    let levelIncomeEarnings = 0;
+    if (client.isLevelIncomeUnlocked && client.referralCode) {
+      const allClients = await Client.find({}).lean();
+      const cleanCode = (c?: string) =>
+        (c || '').toString().trim().toUpperCase().replace(/^[#@\s]+/, '').replace(/(STANDARD|VIP|PRIME|ELITE|INSTITUTIONAL|GROWTH|SOVEREIGN)$/i, '').replace(/^INF-?/, '');
+
+      const codeResolver = new Map<string, string>();
+      for (const c of allClients) {
+        const canonical = cleanCode(c.referralCode || (c.firstName ? `INF-${c.firstName.toUpperCase()}101` : ''));
+        if (!canonical) continue;
+        codeResolver.set(canonical, canonical);
+        const cId = cleanCode(c.clientId || (c as any).id);
+        if (cId) codeResolver.set(cId, canonical);
+        const emailKey = (c.email || '').toString().trim().toUpperCase();
+        if (emailKey) codeResolver.set(emailKey, canonical);
+      }
+
+      const rootCodeNorm = cleanCode(client.referralCode);
+      const effectiveRoot = codeResolver.get(rootCodeNorm) || rootCodeNorm;
+
+      const parentMap = new Map<string, any[]>();
+      for (const c of allClients) {
+        if (c.clientId === client.clientId) continue;
+        const parent = cleanCode(c.referredByCode);
+        if (!parent) continue;
+        const effectiveParent = codeResolver.get(parent) || parent;
+        const list = parentMap.get(effectiveParent) || [];
+        list.push(c);
+        parentMap.set(effectiveParent, list);
+      }
+
+      const tierRates: Record<number, number> = { 1: 10, 2: 5, 3: 3, 4: 2, 5: 1 };
+      const visited = new Set<string>();
+      visited.add(client.clientId);
+
+      let currentParents = [effectiveRoot];
+      for (let lvl = 1; lvl <= 5; lvl++) {
+        const rate = tierRates[lvl];
+        const nextParents: string[] = [];
+
+        for (const parentCode of currentParents) {
+          const children = parentMap.get(parentCode) || [];
+          for (const child of children) {
+            if (visited.has(child.clientId)) continue;
+            visited.add(child.clientId);
+
+            const childCode = cleanCode(child.referralCode);
+            if (childCode) nextParents.push(childCode);
+
+            const cap = Number(child.assignedPlanAmount || 0);
+            const isActive = child.assignedPlanStatus === 'active' && cap > 0;
+            if (isActive) {
+              const planNameLower = (child.assignedPlanName || '').toLowerCase();
+              const is20M = planNameLower.includes('20') || (child.assignedPlanId || '').includes('7441');
+              const is6M = planNameLower.includes('6');
+              const durationMonths = is20M ? 20 : is6M ? 6 : 14;
+
+              // Net profit ROI calculation:
+              // 20M: 100% net profit / 20 = 5% monthly
+              // 14M: 7.5% net profit monthly
+              const monthlyRoiPct = is20M || is6M ? 5.0 : 7.5;
+              const dailyRoi = (cap * (monthlyRoiPct / 100)) / 30;
+              const dailyCut = (dailyRoi * rate) / 100;
+
+              const startDate = child.assignedPlanStartDate || child.joinedDate || new Date();
+              const startMs = new Date(startDate).getTime();
+              const daysElapsed = Math.max(0, Math.floor((now.getTime() - startMs) / (1000 * 60 * 60 * 24)));
+              const maxDays = durationMonths * 30;
+              const completedDays = Math.min(maxDays, daysElapsed);
+
+              levelIncomeEarnings += dailyCut * completedDays;
+            }
+          }
+        }
+        currentParents = nextParents;
+        if (currentParents.length === 0) break;
+      }
+      levelIncomeEarnings = Math.round(levelIncomeEarnings * 100) / 100;
+    }
+
+    if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') && referralEarnings <= 0 && levelIncomeEarnings <= 0) {
       return reply.status(400).send({
         success: false,
         error: 'No active wealth plan or withdrawable earnings found for this account.',
@@ -246,7 +327,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       status: 'disbursed',
     });
     const totalWithdrawnGross = settledWds.reduce((sum, w) => sum + (w.grossAmount || w.amount), 0);
-    const availableToWithdraw = Math.max(0, Math.round((totalAccruedYield + referralEarnings - totalWithdrawnGross) * 100) / 100);
+    const availableToWithdraw = Math.max(0, Math.round((totalAccruedYield + referralEarnings + levelIncomeEarnings - totalWithdrawnGross) * 100) / 100);
 
     // Reserved balance check: ensures that even if pending check was bypassed via direct API call, balance is strictly locked
     const unreservedAvailable = Math.max(0, Math.round((availableToWithdraw - totalPendingGross) * 100) / 100);
