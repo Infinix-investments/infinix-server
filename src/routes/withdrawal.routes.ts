@@ -221,14 +221,16 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
 
     // Calculate 5-Tier Level Income if client has unlocked privilege
     let levelIncomeEarnings = 0;
-    if (client.isLevelIncomeUnlocked && client.referralCode) {
+    const rootRawCode = client.referralCode || (client.firstName ? `INF-${client.firstName.toUpperCase()}101` : client.clientId);
+    if (client.isLevelIncomeUnlocked && rootRawCode) {
       const allClients = await Client.find({}).lean();
+      const allReferrals = await Referral.find({}).lean();
       const cleanCode = (c?: string) =>
         (c || '').toString().trim().toUpperCase().replace(/^[#@\s]+/, '').replace(/(STANDARD|VIP|PRIME|ELITE|INSTITUTIONAL|GROWTH|SOVEREIGN)$/i, '').replace(/^INF-?/, '');
 
       const codeResolver = new Map<string, string>();
       for (const c of allClients) {
-        const canonical = cleanCode(c.referralCode || (c.firstName ? `INF-${c.firstName.toUpperCase()}101` : ''));
+        const canonical = cleanCode(c.referralCode || (c.firstName ? `INF-${c.firstName.toUpperCase()}101` : c.clientId));
         if (!canonical) continue;
         codeResolver.set(canonical, canonical);
         const cId = cleanCode(c.clientId || (c as any).id);
@@ -237,7 +239,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         if (emailKey) codeResolver.set(emailKey, canonical);
       }
 
-      const rootCodeNorm = cleanCode(client.referralCode);
+      const rootCodeNorm = cleanCode(rootRawCode);
       const effectiveRoot = codeResolver.get(rootCodeNorm) || rootCodeNorm;
 
       const parentMap = new Map<string, any[]>();
@@ -251,11 +253,42 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
         parentMap.set(effectiveParent, list);
       }
 
+      // Also include referral records if not already in client list
+      for (const r of allReferrals) {
+        const parentCode = cleanCode(r.referrerCode || r.referrerId);
+        const refereeId = r.refereeId;
+        if (!parentCode || !refereeId) continue;
+        const effectiveParent = codeResolver.get(parentCode) || parentCode;
+        const existing = parentMap.get(effectiveParent) || [];
+        if (!existing.some((c: any) => c.clientId === refereeId || c._id?.toString() === refereeId)) {
+          const match = allClients.find((c: any) => c.clientId === refereeId || c._id?.toString() === refereeId);
+          if (match) {
+            existing.push(match);
+            parentMap.set(effectiveParent, existing);
+          } else if (Number(r.capitalAmount || 0) > 0 || r.status === 'active') {
+            existing.push({
+              clientId: refereeId,
+              firstName: (r.refereeName || 'Investor').split(' ')[0],
+              lastName: (r.refereeName || 'Partner').split(' ').slice(1).join(' '),
+              assignedPlanName: r.planName || '14-Month 15% Return Accelerator',
+              assignedPlanAmount: Number(r.capitalAmount || 0),
+              assignedPlanStartDate: r.dateJoined || '2026-01-01',
+              assignedPlanStatus: 'active',
+              referralCode: (r as any).referralCode || `INF-${refereeId}`,
+              referredByCode: parentCode,
+            });
+            parentMap.set(effectiveParent, existing);
+          }
+        }
+      }
+
       const tierRates: Record<number, number> = { 1: 10, 2: 5, 3: 3, 4: 2, 5: 1 };
       const visited = new Set<string>();
       visited.add(client.clientId);
 
       let currentParents = [effectiveRoot];
+      if (client.clientId) currentParents.push(cleanCode(client.clientId));
+
       for (let lvl = 1; lvl <= 5; lvl++) {
         const rate = tierRates[lvl];
         const nextParents: string[] = [];
@@ -266,31 +299,63 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
             if (visited.has(child.clientId)) continue;
             visited.add(child.clientId);
 
-            const childCode = cleanCode(child.referralCode);
-            if (childCode) nextParents.push(childCode);
+            const rawChildCode = child.referralCode || (child.firstName ? `INF-${child.firstName.toUpperCase()}101` : '');
+            const childCode = cleanCode(rawChildCode);
+            if (childCode) {
+              nextParents.push(childCode);
+              const canonicalChild = codeResolver.get(childCode);
+              if (canonicalChild && canonicalChild !== childCode) nextParents.push(canonicalChild);
+            }
+            if (child.clientId) nextParents.push(cleanCode(child.clientId));
 
-            const cap = Number(child.assignedPlanAmount || 0);
-            const isActive = child.assignedPlanStatus === 'active' && cap > 0;
+            let cap = Number(child.assignedPlanAmount || 0);
+            const activePlansList = Array.isArray(child.activePlans) && child.activePlans.length > 0
+              ? child.activePlans.filter((p: any) => (p.status || 'active') === 'active')
+              : [];
+
+            if (cap === 0 && activePlansList.length > 0) {
+              cap = activePlansList.reduce((sum: number, p: any) => sum + (Number(p.capitalAmount) || 0), 0);
+            }
+
+            const isActive = (child.assignedPlanStatus === 'active' || activePlansList.length > 0) && cap > 0;
             if (isActive) {
-              const planNameLower = (child.assignedPlanName || '').toLowerCase();
-              const is20M = planNameLower.includes('20') || (child.assignedPlanId || '').includes('7441');
-              const is6M = planNameLower.includes('6');
-              const durationMonths = is20M ? 20 : is6M ? 6 : 14;
+              if (activePlansList.length > 0) {
+                for (const p of activePlansList) {
+                  const pCap = Number(p.capitalAmount || 0);
+                  const planNameLower = (p.planName || '').toLowerCase();
+                  const is20M = planNameLower.includes('20') || (p.planId || '').includes('7441');
+                  const is6M = planNameLower.includes('6');
+                  const durationMonths = p.durationMonths || (is20M ? 20 : is6M ? 6 : 14);
+                  const monthlyRoiPct = is20M || is6M ? 5.0 : 7.5;
+                  const pDailyRoi = (pCap * (monthlyRoiPct / 100)) / 30;
+                  const pDailyCut = (pDailyRoi * rate) / 100;
 
-              // Net profit ROI calculation:
-              // 20M: 100% net profit / 20 = 5% monthly
-              // 14M: 7.5% net profit monthly
-              const monthlyRoiPct = is20M || is6M ? 5.0 : 7.5;
-              const dailyRoi = (cap * (monthlyRoiPct / 100)) / 30;
-              const dailyCut = (dailyRoi * rate) / 100;
+                  const pStart = p.startDate || child.assignedPlanStartDate || child.joinedDate || '2026-01-01';
+                  const startMs = new Date(pStart).getTime();
+                  const daysElapsed = Math.max(0, Math.floor((now.getTime() - startMs) / (1000 * 60 * 60 * 24)));
+                  const maxDays = durationMonths * 30;
+                  const completedDays = Math.min(maxDays, daysElapsed);
 
-              const startDate = child.assignedPlanStartDate || child.joinedDate || new Date();
-              const startMs = new Date(startDate).getTime();
-              const daysElapsed = Math.max(0, Math.floor((now.getTime() - startMs) / (1000 * 60 * 60 * 24)));
-              const maxDays = durationMonths * 30;
-              const completedDays = Math.min(maxDays, daysElapsed);
+                  levelIncomeEarnings += pDailyCut * completedDays;
+                }
+              } else {
+                const planNameLower = (child.assignedPlanName || '').toLowerCase();
+                const is20M = planNameLower.includes('20') || (child.assignedPlanId || '').includes('7441');
+                const is6M = planNameLower.includes('6');
+                const durationMonths = is20M ? 20 : is6M ? 6 : 14;
 
-              levelIncomeEarnings += dailyCut * completedDays;
+                const monthlyRoiPct = is20M || is6M ? 5.0 : 7.5;
+                const dailyRoi = (cap * (monthlyRoiPct / 100)) / 30;
+                const dailyCut = (dailyRoi * rate) / 100;
+
+                const startDate = child.assignedPlanStartDate || child.joinedDate || '2026-01-01';
+                const startMs = new Date(startDate).getTime();
+                const daysElapsed = Math.max(0, Math.floor((now.getTime() - startMs) / (1000 * 60 * 60 * 24)));
+                const maxDays = durationMonths * 30;
+                const completedDays = Math.min(maxDays, daysElapsed);
+
+                levelIncomeEarnings += dailyCut * completedDays;
+              }
             }
           }
         }
