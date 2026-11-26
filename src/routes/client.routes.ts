@@ -5,6 +5,7 @@ import { Client } from '../models/Client.js';
 import { Plan } from '../models/Plan.js';
 import { Investment } from '../models/Investment.js';
 import { Referral } from '../models/Referral.js';
+import { Transaction } from '../models/Transaction.js';
 import { AuditLog } from '../models/AuditLog.js';
 import { resolveSponsorClient } from './auth.routes.js';
 
@@ -101,6 +102,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         joinedDate: c.joinedDate,
         notes: c.notes,
         activePlans: resolveClientActivePlans(c),
+        archivedPlans: c.archivedPlans || [],
       })),
     });
   });
@@ -145,6 +147,7 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         joinedDate: client.joinedDate,
         notes: client.notes,
         activePlans: resolveClientActivePlans(client),
+        archivedPlans: client.archivedPlans || [],
       },
     });
   });
@@ -405,6 +408,19 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
       ],
     });
 
+    // Record capital addition in Transaction ledger for complete audit trail
+    await Transaction.create({
+      transactionId: `tx-${Date.now()}-dep`,
+      clientId: client.clientId,
+      type: 'addition',
+      typeLabel: 'Capital Deposit',
+      amount,
+      date: activeStartDate,
+      description: `Contractual plan allocation: ${resolvedPlanName} (Ref: ${paymentReference || 'Direct USDT Escrow Verified'})`,
+      currency: 'USDT',
+      status: 'settled',
+    });
+
     // Compute cumulative active plans capital
     const totalActivePlanCapital = client.activePlans
       .filter((p) => p.status === 'active')
@@ -503,6 +519,35 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         return reply.status(404).send({ success: false, error: 'Contract plan instance not found on client.' });
       }
 
+      // Solution A: Archive plan with frozen realized yield so historical withdrawals are never orphaned into deficit
+      const now = new Date();
+      const planStart = new Date(revoked.startDate);
+      const elapsedDays = Math.max(0, Math.floor((now.getTime() - planStart.getTime()) / (1000 * 60 * 60 * 24)));
+      const maxDays = (revoked.durationMonths || 14) * 30;
+      const completedDays = Math.min(maxDays, elapsedDays);
+      const dailyRate = (revoked.dailyReturnPct || 0.5) / 100;
+      const frozenYield = Math.round((Number(revoked.capitalAmount) || 0) * dailyRate * completedDays * 100) / 100;
+
+      if (!client.archivedPlans) {
+        client.archivedPlans = [];
+      }
+      client.archivedPlans.push({
+        planInstanceId: revoked.planInstanceId,
+        planId: revoked.planId,
+        planName: revoked.planName,
+        capitalAmount: Number(revoked.capitalAmount) || 0,
+        startDate: revoked.startDate,
+        archivedAt: now.toISOString(),
+        durationMonths: revoked.durationMonths || 14,
+        dailyReturnPct: revoked.dailyReturnPct || 0.5,
+        monthlyReturnPct: revoked.monthlyReturnPct || 15.0,
+        completedDays,
+        frozenAccruedYield: frozenYield,
+        status: 'revoked',
+        reason: reason || 'Revoked by wealth administrator',
+      });
+      client.markModified('archivedPlans');
+
       client.activePlans = client.activePlans.filter((p) => p.planInstanceId !== planInstanceId);
       client.markModified('activePlans');
 
@@ -567,12 +612,59 @@ export async function clientRoutes(fastify: FastifyInstance, options: FastifyPlu
         data: {
           ...client.toObject(),
           activePlans: resolveClientActivePlans(client),
+          archivedPlans: client.archivedPlans || [],
         },
       });
     }
 
     const prevPlanName = client.assignedPlanName || 'Private Wealth Plan';
     const prevAmount = client.assignedPlanAmount || 0;
+
+    // Solution A: Archive all active plans with frozen accrued yield before clearing
+    const now = new Date();
+    if (!client.archivedPlans) {
+      client.archivedPlans = [];
+    }
+    const plansToArchive = Array.isArray(client.activePlans) && client.activePlans.length > 0
+      ? client.activePlans
+      : (prevAmount > 0 && client.assignedPlanStartDate
+          ? [{
+              planInstanceId: `plan-initial-${client.clientId}`,
+              planId: client.assignedPlanId || 'plan-14m-15pct',
+              planName: prevPlanName,
+              capitalAmount: prevAmount,
+              startDate: client.assignedPlanStartDate,
+              durationMonths: 14,
+              dailyReturnPct: 0.5,
+              monthlyReturnPct: 15.0,
+            }]
+          : []);
+
+    for (const p of plansToArchive) {
+      const planStart = new Date(p.startDate || client.assignedPlanStartDate || client.joinedDate || now);
+      const elapsedDays = Math.max(0, Math.floor((now.getTime() - planStart.getTime()) / (1000 * 60 * 60 * 24)));
+      const maxDays = (p.durationMonths || 14) * 30;
+      const completedDays = Math.min(maxDays, elapsedDays);
+      const dailyRate = (p.dailyReturnPct || 0.5) / 100;
+      const frozenYield = Math.round((Number(p.capitalAmount) || 0) * dailyRate * completedDays * 100) / 100;
+
+      client.archivedPlans.push({
+        planInstanceId: p.planInstanceId || `plan-archived-${Date.now()}`,
+        planId: p.planId || 'plan-14m-15pct',
+        planName: p.planName || prevPlanName,
+        capitalAmount: Number(p.capitalAmount) || 0,
+        startDate: p.startDate || client.assignedPlanStartDate || now.toISOString().split('T')[0],
+        archivedAt: now.toISOString(),
+        durationMonths: p.durationMonths || 14,
+        dailyReturnPct: p.dailyReturnPct || 0.5,
+        monthlyReturnPct: p.monthlyReturnPct || 15.0,
+        completedDays,
+        frozenAccruedYield: frozenYield,
+        status: 'revoked',
+        reason: reason || 'Full mandate revocation by wealth administrator',
+      });
+    }
+    client.markModified('archivedPlans');
 
     // Reset all client plan state
     client.assignedPlanId = null;

@@ -15,6 +15,22 @@ export interface IClientPlan {
   assignedAt?: string;
 }
 
+export interface IArchivedPlan {
+  planInstanceId: string;
+  planId: string;
+  planName: string;
+  capitalAmount: number;
+  startDate: string;
+  archivedAt: string;
+  durationMonths: number;
+  dailyReturnPct: number;
+  monthlyReturnPct: number;
+  completedDays: number;
+  frozenAccruedYield: number;
+  status: 'revoked' | 'matured';
+  reason?: string;
+}
+
 export interface IClient extends Document {
   clientId: string;
   firstName: string;
@@ -41,6 +57,7 @@ export interface IClient extends Document {
   assignedPlanStartDate?: string;
   assignedPlanStatus: 'active' | 'pending_assignment' | 'matured' | 'cancelled';
   activePlans: IClientPlan[];
+  archivedPlans?: IArchivedPlan[];
   currentMonthIndex: number;
   currentMonthWithdrawn: boolean;
   lastWithdrawalDate?: string;
@@ -119,6 +136,26 @@ const ClientSchema: Schema = new Schema(
           status: { type: String, enum: ['active', 'matured', 'cancelled'], default: 'active' },
           paymentReference: { type: String, default: '' },
           assignedAt: { type: String },
+        },
+      ],
+      default: [],
+    },
+    archivedPlans: {
+      type: [
+        {
+          planInstanceId: { type: String, required: true },
+          planId: { type: String, required: true },
+          planName: { type: String, required: true },
+          capitalAmount: { type: Number, required: true },
+          startDate: { type: String, required: true },
+          archivedAt: { type: String, required: true },
+          durationMonths: { type: Number, default: 14 },
+          dailyReturnPct: { type: Number, default: 0.5 },
+          monthlyReturnPct: { type: Number, default: 15.0 },
+          completedDays: { type: Number, default: 0 },
+          frozenAccruedYield: { type: Number, default: 0 },
+          status: { type: String, enum: ['revoked', 'matured'], default: 'revoked' },
+          reason: { type: String },
         },
       ],
       default: [],
