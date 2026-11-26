@@ -10,6 +10,47 @@ import { Referral } from '../models/Referral.js';
 // In-memory monotonic lock per client to block race-condition double-clicks
 const activeWithdrawalLocks = new Set<string>();
 
+/**
+ * Accurately computes completed calendar days between a start date and reference date,
+ * eliminating UTC midnight parsing skews, timezone offsets, and 24-hr fractional lag.
+ * Perfectly synchronizes with the mobile and web client day-counting logic.
+ */
+export function calculateCalendarDays(
+  startDateStr?: string | Date | null,
+  referenceDate?: Date | null
+): number {
+  if (!startDateStr) return 0;
+  let startYear: number, startMonth: number, startDay: number;
+  if (typeof startDateStr === 'string') {
+    const cleanStr = startDateStr.split('T')[0];
+    const parts = cleanStr.split(/[-/]/);
+    if (parts.length >= 3) {
+      startYear = parseInt(parts[0], 10);
+      startMonth = parseInt(parts[1], 10) - 1;
+      startDay = parseInt(parts[2], 10);
+    } else {
+      const d = new Date(startDateStr);
+      if (isNaN(d.getTime())) return 0;
+      startYear = d.getFullYear();
+      startMonth = d.getMonth();
+      startDay = d.getDate();
+    }
+  } else {
+    const d = new Date(startDateStr);
+    if (isNaN(d.getTime())) return 0;
+    startYear = d.getFullYear();
+    startMonth = d.getMonth();
+    startDay = d.getDate();
+  }
+
+  const now = referenceDate || new Date();
+  const startMidnight = new Date(startYear, startMonth, startDay, 0, 0, 0, 0);
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const diffMs = todayMidnight.getTime() - startMidnight.getTime();
+  if (diffMs <= 0) return 0;
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+}
+
 export async function withdrawalRoutes(fastify: FastifyInstance, options: FastifyPluginOptions) {
   // GET /api/withdrawals/server-time (Authoritative server timestamp to eliminate device clock skew)
   fastify.get('/server-time', async (request, reply) => {
@@ -96,8 +137,8 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     let totalAccruedYield = 0;
     if (activeInvestments.length > 0) {
       for (const inv of activeInvestments) {
-        const invStart = inv.investmentDate ? new Date(inv.investmentDate) : (client.assignedPlanStartDate ? new Date(client.assignedPlanStartDate) : new Date(inv.createdAt));
-        const pDays = Math.max(0, Math.floor((now.getTime() - invStart.getTime()) / (1000 * 60 * 60 * 24)));
+        const invStart = inv.investmentDate || client.assignedPlanStartDate || inv.createdAt;
+        const pDays = calculateCalendarDays(invStart, now);
         const maxDays = (inv.durationMonths || 14) * 30;
         const effectiveDays = Math.min(maxDays, pDays);
         const rate = (inv.dailyReturnPct || 0.5) / 100;
@@ -106,10 +147,8 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       }
       totalAccruedYield = Math.round(totalAccruedYield * 100) / 100;
     } else if (client.assignedPlanAmount && client.assignedPlanStatus === 'active') {
-      const startDate = client.assignedPlanStartDate
-        ? new Date(client.assignedPlanStartDate)
-        : new Date(client.joinedDate || Date.now());
-      const pDays = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
+      const startDate = client.assignedPlanStartDate || client.joinedDate || new Date();
+      const pDays = calculateCalendarDays(startDate, now);
       
       // Dynamic duration and daily return lookup based on assigned plan ID
       let durMonths = 14;
@@ -128,8 +167,18 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       totalAccruedYield = Math.round(dailyProfitAmount * effectiveAccruedDays * 100) / 100;
     }
 
+    // Include frozen accrued yield from archived/matured contracts (Solution A)
+    let archivedYield = 0;
+    if (Array.isArray(client.archivedPlans) && client.archivedPlans.length > 0) {
+      archivedYield = client.archivedPlans.reduce(
+        (sum: number, p: any) => sum + (Number(p.frozenAccruedYield) || 0),
+        0
+      );
+      archivedYield = Math.round(archivedYield * 100) / 100;
+    }
+
     // Earliest plan start date for initial 10-day unlock rule & cycle indexing
-    let earliestStartDate = client.assignedPlanStartDate ? new Date(client.assignedPlanStartDate) : new Date(client.joinedDate || Date.now());
+    let earliestStartDate: string | Date = client.assignedPlanStartDate || client.joinedDate || new Date();
     let maxDurationMonths = 14;
     if (activeInvestments.length > 0) {
       const dates = activeInvestments
@@ -144,7 +193,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       const is20M = (client.assignedPlanName || '').toLowerCase().includes('20') || (client.assignedPlanId || '').includes('7441');
       maxDurationMonths = is20M ? 20 : 14;
     }
-    const diffDays = Math.max(0, Math.floor((now.getTime() - earliestStartDate.getTime()) / (1000 * 60 * 60 * 24)));
+    const diffDays = calculateCalendarDays(earliestStartDate, now);
 
     // Calculate referral earnings (5% of each active referee's invested capital)
     // Multi-key deduplication prevents double-counting across duplicate Referral docs or registered client records
@@ -331,8 +380,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
                   const pDailyCut = (pDailyRoi * rate) / 100;
 
                   const pStart = p.startDate || child.assignedPlanStartDate || child.joinedDate || '2026-01-01';
-                  const startMs = new Date(pStart).getTime();
-                  const daysElapsed = Math.max(0, Math.floor((now.getTime() - startMs) / (1000 * 60 * 60 * 24)));
+                  const daysElapsed = calculateCalendarDays(pStart, now);
                   const maxDays = durationMonths * 30;
                   const completedDays = Math.min(maxDays, daysElapsed);
 
@@ -349,8 +397,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
                 const dailyCut = (dailyRoi * rate) / 100;
 
                 const startDate = child.assignedPlanStartDate || child.joinedDate || '2026-01-01';
-                const startMs = new Date(startDate).getTime();
-                const daysElapsed = Math.max(0, Math.floor((now.getTime() - startMs) / (1000 * 60 * 60 * 24)));
+                const daysElapsed = calculateCalendarDays(startDate, now);
                 const maxDays = durationMonths * 30;
                 const completedDays = Math.min(maxDays, daysElapsed);
 
@@ -364,7 +411,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       }
     }
 
-    if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') && referralEarnings <= 0 && levelIncomeEarnings <= 0) {
+    if (activeInvestments.length === 0 && (!client.assignedPlanAmount || client.assignedPlanStatus !== 'active') && archivedYield <= 0 && referralEarnings <= 0 && levelIncomeEarnings <= 0) {
       return reply.status(400).send({
         success: false,
         error: 'No active wealth plan or withdrawable earnings found for this account.',
@@ -391,7 +438,7 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
       status: 'disbursed',
     });
     const totalWithdrawnGross = settledWds.reduce((sum, w) => sum + (w.grossAmount || w.amount), 0);
-    const availableToWithdraw = Math.max(0, Math.round((totalAccruedYield + referralEarnings + levelIncomeEarnings - totalWithdrawnGross) * 100) / 100);
+    const availableToWithdraw = Math.max(0, Math.round((totalAccruedYield + archivedYield + referralEarnings + levelIncomeEarnings - totalWithdrawnGross) * 100) / 100);
 
     // Reserved balance check: ensures that even if pending check was bypassed via direct API call, balance is strictly locked
     const unreservedAvailable = Math.max(0, Math.round((availableToWithdraw - totalPendingGross) * 100) / 100);
@@ -403,8 +450,8 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     }).sort({ createdAt: -1 });
 
     if (latestWd) {
-      const lastDate = new Date(latestWd.requestDate || latestWd.createdAt);
-      const daysSinceLast = Math.floor((now.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+      const lastDate = latestWd.requestDate || latestWd.createdAt;
+      const daysSinceLast = calculateCalendarDays(lastDate, now);
       if (daysSinceLast < 10) {
         const remaining = 10 - daysSinceLast;
         return reply.status(400).send({
@@ -520,6 +567,13 @@ export async function withdrawalRoutes(fastify: FastifyInstance, options: Fastif
     const withdrawal = await Withdrawal.findOne({ withdrawalId: id });
     if (!withdrawal) {
       return reply.status(404).send({ success: false, error: 'Withdrawal record not found.' });
+    }
+
+    if (withdrawal.status === 'disbursed' && status === 'disbursed') {
+      return reply.status(400).send({
+        success: false,
+        error: 'This withdrawal has already been settled and disbursed.',
+      });
     }
 
     withdrawal.status = status;
